@@ -4,8 +4,12 @@ function clamp(value: number, min = 0, max = 100) {
   return Math.max(min, Math.min(max, value));
 }
 
-function sumNullable(...values: Array<number | null | undefined>) {
-  return values.reduce((acc, value) => acc + (value ?? 0), 0);
+function sumNullable(...values: Array<number | null | undefined>): number {
+  let sum = 0;
+  for (const value of values) {
+    sum += value ?? 0;
+  }
+  return sum;
 }
 
 type StrategyEvaluator = (match: MatchAnalyticsInput, weight: number) => StrategyResult;

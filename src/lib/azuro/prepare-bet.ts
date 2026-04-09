@@ -1,4 +1,5 @@
-import { getBetCalculation, getBetFee, getBetTypedData, type Address } from "@azuro-org/toolkit";
+import { getBetCalculation, getBetFee, getBetTypedData } from "@azuro-org/toolkit";
+import type { Address } from "viem";
 
 import { AZURO_CHAIN_ID } from "@/config/chain";
 

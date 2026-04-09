@@ -1,7 +1,8 @@
 "use client";
 
-import { chainsData, type Address } from "@azuro-org/toolkit";
+import { chainsData } from "@azuro-org/toolkit";
 import { useEffect, useMemo, useState } from "react";
+import type { Address } from "viem";
 import { useAccount, useSignTypedData } from "wagmi";
 
 import { AZURO_CHAIN_ID } from "@/config/chain";
