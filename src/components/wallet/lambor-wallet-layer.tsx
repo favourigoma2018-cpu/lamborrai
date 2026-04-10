@@ -1,10 +1,12 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { formatEther, isAddress, parseEther } from "viem";
+import { isAddress, parseEther } from "viem";
 import { useAccount, useBalance, useConnect, useDisconnect, useSendTransaction } from "wagmi";
 
+import { readPlacedBets } from "@/lib/bets/local-bets";
 import { POLYGON_CHAIN_HEX, POLYGON_CHAIN_ID, POLYGON_CHAIN_PARAMS } from "@/lib/wallet/polygon";
+import type { PlacedBetRecord } from "@/types/bets";
 
 type WalletMode = "connected" | "manual";
 type WalletActionTab = "deposit" | "withdraw";
@@ -27,6 +29,7 @@ type WalletSummary = {
 
 const STORAGE_MANUAL_ADDRESS = "lambor.wallet.manualAddress.v1";
 const STORAGE_WITHDRAW_ADDRESS = "lambor.wallet.withdrawAddress.v1";
+const STORAGE_USE_PRIMARY_WITHDRAW = "lambor.wallet.usePrimaryWithdraw.v1";
 
 const platformDepositAddress =
   process.env.NEXT_PUBLIC_PLATFORM_DEPOSIT_ADDRESS || "0x000000000000000000000000000000000000dEaD";
@@ -74,14 +77,24 @@ export function LamborWalletLayer() {
   const [tab, setTab] = useState<WalletActionTab>("deposit");
 
   const [withdrawAddress, setWithdrawAddress] = useState("");
+  const [usePrimaryForWithdraw, setUsePrimaryForWithdraw] = useState(true);
+  const [isEditingWithdrawAddress, setIsEditingWithdrawAddress] = useState(false);
   const [withdrawAmount, setWithdrawAmount] = useState("");
   const [depositAmount, setDepositAmount] = useState("");
   const [txStatus, setTxStatus] = useState<TxStatus>("idle");
   const [txMessage, setTxMessage] = useState<string | null>(null);
   const [showConfirmWithdraw, setShowConfirmWithdraw] = useState(false);
+  const [placedBets, setPlacedBets] = useState<PlacedBetRecord[]>([]);
 
-  const activeAddress = walletMode === "connected" ? connectedAddress ?? null : manualAddress;
+  const primaryWalletAddress = connectedAddress ?? null;
+  const activeAddress = walletMode === "connected" ? primaryWalletAddress : manualAddress;
   const connectedOnPolygon = isConnected && chainId === POLYGON_CHAIN_ID;
+  const effectiveWithdrawAddress =
+    usePrimaryForWithdraw || !withdrawAddress
+      ? primaryWalletAddress
+      : isAddress(withdrawAddress)
+        ? withdrawAddress
+        : null;
 
   const { data: connectedBalance } = useBalance({
     address: connectedAddress,
@@ -98,9 +111,38 @@ export function LamborWalletLayer() {
     return `${Number(connectedBalance.formatted).toFixed(6)} ${connectedBalance.symbol}`;
   }, [connectedBalance, manualSummary, walletMode]);
 
+  const baseBalance = useMemo(() => {
+    if (walletMode === "manual") {
+      return Number.parseFloat(manualSummary?.balance.formatted ?? "0") || 0;
+    }
+    return Number.parseFloat(connectedBalance?.formatted ?? "0") || 0;
+  }, [connectedBalance?.formatted, manualSummary?.balance.formatted, walletMode]);
+
+  const inBetsBalance = useMemo(
+    () =>
+      placedBets
+        .filter((b) => b.status === "pending")
+        .reduce((sum, b) => sum + (Number.parseFloat(b.amount) || 0), 0),
+    [placedBets],
+  );
+  const pendingBalance = useMemo(
+    () =>
+      placedBets
+        .filter((b) => b.status === "pending")
+        .reduce((sum, b) => {
+          const potential = Number.parseFloat(b.potentialPayout) || 0;
+          const stake = Number.parseFloat(b.amount) || 0;
+          return sum + Math.max(0, potential - stake);
+        }, 0),
+    [placedBets],
+  );
+  const availableBalance = Math.max(0, baseBalance - inBetsBalance);
+  const totalBalance = availableBalance + inBetsBalance + pendingBalance;
+
   useEffect(() => {
     const savedManual = window.localStorage.getItem(STORAGE_MANUAL_ADDRESS);
     const savedWithdraw = window.localStorage.getItem(STORAGE_WITHDRAW_ADDRESS);
+    const savedUsePrimary = window.localStorage.getItem(STORAGE_USE_PRIMARY_WITHDRAW);
     if (savedManual && isAddress(savedManual)) {
       setManualInput(savedManual);
       setManualAddress(savedManual);
@@ -110,7 +152,16 @@ export function LamborWalletLayer() {
     if (savedWithdraw && isAddress(savedWithdraw)) {
       setWithdrawAddress(savedWithdraw);
     }
+    if (savedUsePrimary === "false") {
+      setUsePrimaryForWithdraw(false);
+    }
+    setPlacedBets(readPlacedBets());
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setPlacedBets(readPlacedBets()), 4000);
+    return () => window.clearInterval(timer);
   }, []);
 
   useEffect(() => {
@@ -145,6 +196,30 @@ export function LamborWalletLayer() {
     }
   }
 
+  function onSaveWithdrawalAddress() {
+    if (usePrimaryForWithdraw) {
+      window.localStorage.setItem(STORAGE_USE_PRIMARY_WITHDRAW, "true");
+      setIsEditingWithdrawAddress(false);
+      setWalletError(null);
+      return;
+    }
+    const addr = withdrawAddress.trim();
+    if (!isAddress(addr)) {
+      setWalletError("Withdrawal address must be a valid Polygon address.");
+      return;
+    }
+    window.localStorage.setItem(STORAGE_WITHDRAW_ADDRESS, addr);
+    window.localStorage.setItem(STORAGE_USE_PRIMARY_WITHDRAW, "false");
+    setWalletError(null);
+    setIsEditingWithdrawAddress(false);
+  }
+
+  function onResetWithdrawalToPrimary() {
+    setUsePrimaryForWithdraw(true);
+    window.localStorage.setItem(STORAGE_USE_PRIMARY_WITHDRAW, "true");
+    setIsEditingWithdrawAddress(false);
+  }
+
   async function onConnectedDeposit() {
     if (!connectedAddress) return;
     if (!connectedOnPolygon) {
@@ -172,8 +247,9 @@ export function LamborWalletLayer() {
 
   async function onConnectedWithdraw() {
     if (!connectedAddress) return;
-    if (!isAddress(withdrawAddress)) {
-      setWalletError("Withdraw address must be a valid Polygon address.");
+    const destination = effectiveWithdrawAddress;
+    if (!destination || !isAddress(destination)) {
+      setWalletError("Set a valid withdrawal destination first.");
       return;
     }
     const amountNum = Number.parseFloat(withdrawAmount);
@@ -181,12 +257,15 @@ export function LamborWalletLayer() {
       setWalletError("Enter a valid withdraw amount.");
       return;
     }
-    window.localStorage.setItem(STORAGE_WITHDRAW_ADDRESS, withdrawAddress);
+    if (!usePrimaryForWithdraw) {
+      window.localStorage.setItem(STORAGE_WITHDRAW_ADDRESS, destination);
+      window.localStorage.setItem(STORAGE_USE_PRIMARY_WITHDRAW, "false");
+    }
     setTxStatus("pending");
     setTxMessage("Withdraw transaction pending...");
     try {
       const hash = await sendTransactionAsync({
-        to: withdrawAddress as `0x${string}`,
+        to: destination as `0x${string}`,
         value: parseEther(withdrawAmount),
       });
       setTxStatus("completed");
@@ -199,8 +278,9 @@ export function LamborWalletLayer() {
 
   async function onManualWithdraw() {
     if (!manualAddress) return;
-    if (!isAddress(withdrawAddress)) {
-      setWalletError("Withdraw address must be a valid Polygon address.");
+    const destination = effectiveWithdrawAddress;
+    if (!destination || !isAddress(destination)) {
+      setWalletError("Set a valid withdrawal destination first.");
       return;
     }
     const amountNum = Number.parseFloat(withdrawAmount);
@@ -208,7 +288,10 @@ export function LamborWalletLayer() {
       setWalletError("Enter a valid withdraw amount.");
       return;
     }
-    window.localStorage.setItem(STORAGE_WITHDRAW_ADDRESS, withdrawAddress);
+    if (!usePrimaryForWithdraw) {
+      window.localStorage.setItem(STORAGE_WITHDRAW_ADDRESS, destination);
+      window.localStorage.setItem(STORAGE_USE_PRIMARY_WITHDRAW, "false");
+    }
     setTxStatus("pending");
     setTxMessage("Manual withdrawal request submitted...");
     try {
@@ -217,7 +300,7 @@ export function LamborWalletLayer() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           walletAddress: manualAddress,
-          withdrawAddress,
+          withdrawAddress: destination,
           amount: withdrawAmount,
         }),
       });
@@ -233,8 +316,27 @@ export function LamborWalletLayer() {
 
   return (
     <div className="space-y-4">
+      <div className="rounded-2xl border border-emerald-500/35 bg-zinc-900/60 p-4 shadow-[0_0_28px_rgba(0,255,163,0.14)]">
+        <p className="text-xs uppercase tracking-[0.18em] text-zinc-400">Total Balance</p>
+        <p className="mt-1 text-3xl font-semibold text-emerald-300">${totalBalance.toFixed(2)}</p>
+        <div className="mt-3 grid grid-cols-3 gap-2 text-[11px]">
+          <div className="rounded-xl border border-zinc-700 bg-zinc-900/70 px-2.5 py-2">
+            <p className="text-zinc-500">Available</p>
+            <p className="mt-1 font-semibold text-zinc-200">${availableBalance.toFixed(2)}</p>
+          </div>
+          <div className="rounded-xl border border-zinc-700 bg-zinc-900/70 px-2.5 py-2">
+            <p className="text-zinc-500">In Bets</p>
+            <p className="mt-1 font-semibold text-zinc-200">${inBetsBalance.toFixed(2)}</p>
+          </div>
+          <div className="rounded-xl border border-zinc-700 bg-zinc-900/70 px-2.5 py-2">
+            <p className="text-zinc-500">Pending</p>
+            <p className="mt-1 font-semibold text-zinc-200">${pendingBalance.toFixed(2)}</p>
+          </div>
+        </div>
+      </div>
+
       <div className="rounded-2xl border border-zinc-700/70 bg-zinc-900/55 p-4">
-        <p className="text-xs uppercase tracking-[0.18em] text-zinc-400">Wallet Mode</p>
+        <p className="text-xs uppercase tracking-[0.18em] text-zinc-400">Primary Wallet (Connected)</p>
         <div className="mt-2 flex gap-2">
           <button
             type="button"
@@ -270,7 +372,9 @@ export function LamborWalletLayer() {
               </div>
             ) : (
               <div className="flex items-center gap-2">
-                <span className="rounded-md bg-zinc-800 px-2.5 py-1 text-xs font-mono text-zinc-200">{connectedAddress ? shortenAddress(connectedAddress) : "-"}</span>
+                <span className="rounded-md bg-zinc-800 px-2.5 py-1 text-xs font-mono text-zinc-200">
+                  {primaryWalletAddress ? shortenAddress(primaryWalletAddress) : "-"}
+                </span>
                 <span className={`rounded-md px-2 py-0.5 text-[10px] font-semibold ${connectedOnPolygon ? "border border-emerald-500/40 bg-emerald-500/10 text-emerald-300" : "border border-amber-500/40 bg-amber-500/10 text-amber-200"}`}>
                   {connectedOnPolygon ? "Polygon" : "Wrong network"}
                 </span>
@@ -302,14 +406,61 @@ export function LamborWalletLayer() {
             </button>
           </div>
         )}
+        <p className="mt-2 text-xs text-zinc-500">
+          Active wallet: {activeAddress ? shortenAddress(activeAddress) : "No wallet loaded"} ({displayBalance})
+        </p>
       </div>
 
       <div className="rounded-2xl border border-zinc-700/70 bg-zinc-900/55 p-4">
-        <p className="text-xs uppercase tracking-[0.18em] text-zinc-400">Wallet Snapshot (Polygon)</p>
-        <p className="mt-2 text-2xl font-semibold text-emerald-300">{displayBalance}</p>
-        <p className="mt-1 text-xs text-zinc-500">{activeAddress ? shortenAddress(activeAddress) : "No wallet loaded"}</p>
-        {walletMode === "manual" ? (
-          <p className="mt-2 text-[11px] text-zinc-500">Read-only mode: viewing + withdraw target only (no signing).</p>
+        <div className="mb-2 flex items-center justify-between">
+          <p className="text-xs uppercase tracking-[0.18em] text-zinc-400">Withdrawal Settings</p>
+          <button
+            type="button"
+            onClick={() => setIsEditingWithdrawAddress((v) => !v)}
+            className="rounded-md border border-zinc-600 px-2.5 py-1 text-[11px] text-zinc-300"
+          >
+            {isEditingWithdrawAddress ? "Close" : "Change Address"}
+          </button>
+        </div>
+        <p className="text-xs text-zinc-500">Current withdrawal address:</p>
+        <p className="mt-1 font-mono text-sm text-emerald-300">
+          {effectiveWithdrawAddress ? shortenAddress(effectiveWithdrawAddress) : "Not set"}
+        </p>
+        {isEditingWithdrawAddress ? (
+          <div className="mt-3 space-y-2">
+            <label className="flex items-center gap-2 text-xs text-zinc-300">
+              <input
+                type="checkbox"
+                checked={usePrimaryForWithdraw}
+                onChange={(e) => setUsePrimaryForWithdraw(e.target.checked)}
+              />
+              Use connected primary wallet
+            </label>
+            {!usePrimaryForWithdraw ? (
+              <input
+                value={withdrawAddress}
+                onChange={(e) => setWithdrawAddress(e.target.value)}
+                placeholder="Withdrawal Address"
+                className="h-10 w-full rounded-xl border border-zinc-700 bg-zinc-900/70 px-3 text-sm text-zinc-100 outline-none focus:border-emerald-400"
+              />
+            ) : null}
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={onSaveWithdrawalAddress}
+                className="flex-1 rounded-xl border border-emerald-500/45 bg-emerald-500/10 py-2 text-sm font-semibold text-emerald-300"
+              >
+                Save Address
+              </button>
+              <button
+                type="button"
+                onClick={onResetWithdrawalToPrimary}
+                className="flex-1 rounded-xl border border-zinc-600 py-2 text-sm font-medium text-zinc-300"
+              >
+                Reset to Primary
+              </button>
+            </div>
+          </div>
         ) : null}
       </div>
 
@@ -365,20 +516,17 @@ export function LamborWalletLayer() {
         ) : (
           <div className="space-y-3">
             <input
-              value={withdrawAddress}
-              onChange={(e) => setWithdrawAddress(e.target.value)}
-              placeholder="Withdraw address (Polygon)"
-              className="h-10 w-full rounded-xl border border-zinc-700 bg-zinc-900/70 px-3 text-sm text-zinc-100 outline-none focus:border-emerald-400"
-            />
-            <input
               value={withdrawAmount}
               onChange={(e) => setWithdrawAmount(e.target.value)}
               placeholder="Amount (MATIC)"
               className="h-10 w-full rounded-xl border border-zinc-700 bg-zinc-900/70 px-3 text-sm text-zinc-100 outline-none focus:border-emerald-400"
             />
+            <p className="text-xs text-zinc-500">
+              Destination: {effectiveWithdrawAddress ? shortenAddress(effectiveWithdrawAddress) : "No destination set"}
+            </p>
             <button
               type="button"
-              disabled={!activeAddress || !isAddress(withdrawAddress)}
+              disabled={!activeAddress || !effectiveWithdrawAddress}
               onClick={() => setShowConfirmWithdraw(true)}
               className="w-full rounded-xl border border-zinc-600 py-2.5 text-sm font-semibold text-zinc-200 disabled:opacity-40"
             >
@@ -420,7 +568,7 @@ export function LamborWalletLayer() {
           <div className="w-full max-w-sm rounded-2xl border border-zinc-700 bg-zinc-900 p-4">
             <p className="text-sm font-semibold text-zinc-100">Confirm withdrawal</p>
             <p className="mt-2 text-xs text-zinc-400">
-              Send {withdrawAmount || "-"} MATIC to {withdrawAddress ? shortenAddress(withdrawAddress) : "-"}?
+              Withdraw to {effectiveWithdrawAddress ? shortenAddress(effectiveWithdrawAddress) : "-"}?
             </p>
             <div className="mt-4 flex gap-2">
               <button
