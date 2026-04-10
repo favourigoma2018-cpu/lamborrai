@@ -132,30 +132,29 @@ export async function fetchFixtureStats(fixtureId: number, apiKey: string): Prom
 
 export function normalizeLiveFixtures(payload: ApiFootballFixtureResponse): LiveMatch[] {
   const fixtures = payload.response ?? [];
-  return fixtures
-    .map((item) => {
-      const id = item.fixture?.id;
-      const home = item.teams?.home?.name;
-      const away = item.teams?.away?.name;
-      if (!id || !home || !away) return null;
+  return fixtures.flatMap((item) => {
+    const id = item.fixture?.id;
+    const home = item.teams?.home?.name;
+    const away = item.teams?.away?.name;
+    if (!id || !home || !away) return [];
 
-      const homeGoals = item.goals?.home ?? 0;
-      const awayGoals = item.goals?.away ?? 0;
-      return {
-        id,
-        homeTeam: home,
-        awayTeam: away,
-        score: `${homeGoals} - ${awayGoals}`,
-        minute: item.fixture?.status?.elapsed ?? null,
-        status: item.fixture?.status?.short ?? "LIVE",
-        league: item.league?.name ?? "Unknown League",
-        leagueId: item.league?.id,
-        goalsHome: Number.isFinite(Number(homeGoals)) ? Number(homeGoals) : 0,
-        goalsAway: Number.isFinite(Number(awayGoals)) ? Number(awayGoals) : 0,
-        timestamp: item.fixture?.timestamp ?? 0,
-      } satisfies LiveMatch;
-    })
-    .filter((item): item is LiveMatch => Boolean(item));
+    const homeGoals = item.goals?.home ?? 0;
+    const awayGoals = item.goals?.away ?? 0;
+    const row: LiveMatch = {
+      id,
+      homeTeam: home,
+      awayTeam: away,
+      score: `${homeGoals} - ${awayGoals}`,
+      minute: item.fixture?.status?.elapsed ?? null,
+      status: item.fixture?.status?.short ?? "LIVE",
+      league: item.league?.name ?? "Unknown League",
+      leagueId: item.league?.id,
+      goalsHome: Number.isFinite(Number(homeGoals)) ? Number(homeGoals) : 0,
+      goalsAway: Number.isFinite(Number(awayGoals)) ? Number(awayGoals) : 0,
+      timestamp: item.fixture?.timestamp ?? 0,
+    };
+    return [row];
+  });
 }
 
 export async function fetchLiveFixturesPayload(apiKey: string): Promise<ApiFootballFixtureResponse | null> {
