@@ -8,20 +8,26 @@ type UseLiveMatchesResult = {
   matches: LiveMatch[];
   loading: boolean;
   error: string | null;
+  /** Server cache timestamp (ms); API-Football refresh is ~10 min shared. */
+  lastUpdated: number | null;
 };
 
 type LiveMatchesApiResponse =
   | LiveMatch[]
   | {
       matches?: LiveMatch[];
+      lastUpdated?: number;
+      refreshIntervalMs?: number;
       degraded?: boolean;
       warning?: string;
     };
 
-export function useLiveMatches(intervalMs = 12_000): UseLiveMatchesResult {
+/** Polls `/api/live-matches` only; upstream API-Football is cached ~10 min on the server. */
+export function useLiveMatches(intervalMs = 30_000): UseLiveMatchesResult {
   const [matches, setMatches] = useState<LiveMatch[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [lastUpdated, setLastUpdated] = useState<number | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -36,6 +42,11 @@ export function useLiveMatches(intervalMs = 12_000): UseLiveMatchesResult {
         if (!mounted) return;
         const parsedMatches = Array.isArray(payload) ? payload : (payload.matches ?? []);
         setMatches(parsedMatches);
+        if (!Array.isArray(payload) && typeof payload.lastUpdated === "number") {
+          setLastUpdated(payload.lastUpdated);
+        } else if (Array.isArray(payload)) {
+          setLastUpdated(null);
+        }
         if (!Array.isArray(payload) && payload.degraded && parsedMatches.length === 0) {
           setError(payload.warning ?? "Live provider temporarily unavailable.");
         } else {
@@ -57,5 +68,5 @@ export function useLiveMatches(intervalMs = 12_000): UseLiveMatchesResult {
     };
   }, [intervalMs]);
 
-  return { matches, loading, error };
+  return { matches, loading, error, lastUpdated };
 }

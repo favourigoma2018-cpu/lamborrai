@@ -2,7 +2,8 @@
 
 import { AnimatePresence, motion } from "framer-motion";
 import { BarChart3, Brain, CircleDollarSign, Cpu, Flame, Send, Wallet } from "lucide-react";
-import type { GameData } from "@azuro-org/toolkit";
+import type { BetOrderData, GameData } from "@azuro-org/toolkit";
+import { BetOrderResult, BetOrderState } from "@azuro-org/toolkit";
 import type { ComponentType, ReactNode } from "react";
 import { useMemo, useState } from "react";
 import { useAccount } from "wagmi";
@@ -10,18 +11,22 @@ import { useAccount } from "wagmi";
 import type { BetSlipSelection } from "@/components/bets/bet-slip";
 import { BetPage } from "@/components/bets/bet-page";
 import { LiveMatchesPanel } from "@/components/lambor/live-matches-panel";
+import { StrategyInsightsStrip } from "@/components/lambor/strategy-insights";
+import { StrategyPackagesPanel } from "@/components/lambor/strategy-packages-panel";
 import { LamborWalletLayer } from "@/components/wallet/lambor-wallet-layer";
 import { useLiveMatches } from "@/hooks/use-live-matches";
 import type { ConditionsByGameId } from "@/lib/azuro/fetch-conditions";
-import { readPlacedBets } from "@/lib/bets/local-bets";
+import { useAzuroBets } from "@/hooks/use-azuro-bets";
+import { azuroBetPnl, formatAzuroBetTitle, isAzuroBetOpen } from "@/lib/azuro/bet-helpers";
+import { pickSelectionFromLiveMatch } from "@/lib/lambor/pick-selection-from-live";
 import { executeCommand, parseCommand } from "@/lib/lambor-ai/chat-action-engine";
 import { processLamborStrategy } from "@/lib/lambor-ai/decision-engine";
 import { evaluateMatchesDecisionFirst, riskLevelFromConfidence } from "@/lib/lambor-ai/engine";
 import { readLearningProfile, recordBetResult } from "@/lib/lambor-ai/learning";
 import { isLiveInPlayMatch } from "@/lib/lambor-ai/live-status";
 import { STRATEGY_ORDER } from "@/lib/lambor-ai/strategies";
-import type { MatchAnalyticsInput, StrategyName, StrategyResult } from "@/lib/lambor-ai/types";
-import type { PlacedBetRecord } from "@/types/bets";
+import { liveMatchToAnalyticsInput } from "@/lib/lambor/live-match-analytics";
+import type { StrategyName, StrategyResult } from "@/lib/lambor-ai/types";
 import type { LiveMatch } from "@/types/live-matches";
 
 type TabKey = "dash" | "bet" | "wall" | "mind";
@@ -67,121 +72,15 @@ function formatStartTime(startsAt: string) {
   return new Date(sec * 1000).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" });
 }
 
-function normalizeName(value: string) {
-  return value
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, " ")
-    .replace(/\b(fc|cf|sc|ac|club|deportivo|sporting)\b/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function scoreGameMatch(gameTitle: string, home: string, away: string) {
-  const title = normalizeName(gameTitle);
-  const homeName = normalizeName(home);
-  const awayName = normalizeName(away);
-  let score = 0;
-  if (title.includes(homeName)) score += 2;
-  if (title.includes(awayName)) score += 2;
-
-  const homeToken = homeName.split(" ")[0];
-  const awayToken = awayName.split(" ")[0];
-  if (homeToken && title.includes(homeToken)) score += 1;
-  if (awayToken && title.includes(awayToken)) score += 1;
-  return score;
-}
-
-function scoreLeagueMatch(gameLeague: string, liveLeague: string) {
-  const game = normalizeName(gameLeague);
-  const live = normalizeName(liveLeague);
-  if (!game || !live) return 0;
-  if (game === live) return 3;
-  if (game.includes(live) || live.includes(game)) return 2;
-
-  const gameToken = game.split(" ")[0];
-  const liveToken = live.split(" ")[0];
-  if (gameToken && liveToken && gameToken === liveToken) return 1;
-  return 0;
-}
-
-function scoreKickoffProximity(gameStartsAt: string, liveTimestamp: number) {
-  const startsAtSec = Number.parseInt(gameStartsAt, 10);
-  if (!Number.isFinite(startsAtSec) || !Number.isFinite(liveTimestamp) || liveTimestamp <= 0) return 0;
-
-  const diffHours = Math.abs(startsAtSec - liveTimestamp) / 3600;
-  if (diffHours <= 2) return 3;
-  if (diffHours <= 6) return 2;
-  if (diffHours <= 12) return 1;
-  return 0;
-}
-
-/** True when a live fixture corresponds to an Azuro bet `gameTitle` (team name overlap). */
-function liveFixtureMatchesBetGame(match: LiveMatch, betGameTitle: string): boolean {
-  return scoreGameMatch(betGameTitle, match.homeTeam, match.awayTeam) >= 2;
-}
-
-function filterLiveMatchesForBetGames(matches: LiveMatch[], placedBets: PlacedBetRecord[]): LiveMatch[] {
-  const titles: string[] = [];
-  const seen = new Set<string>();
-  for (const bet of placedBets) {
-    if (bet.status === "failed") continue;
-    const t = bet.gameTitle?.trim();
-    if (!t || seen.has(t)) continue;
-    seen.add(t);
-    titles.push(t);
+function filterLiveMatchesForBetGames(matches: LiveMatch[], orders: BetOrderData[]): LiveMatch[] {
+  const gameIds = new Set<string>();
+  for (const o of orders) {
+    for (const c of o.conditions) {
+      gameIds.add(String(c.gameId));
+    }
   }
-  if (titles.length === 0) return [];
-  return matches.filter((m) => titles.some((title) => liveFixtureMatchesBetGame(m, title)));
-}
-
-function pickSelectionFromLiveMatch(
-  match: LiveMatch,
-  games: GameData[],
-  conditionsByGameId: ConditionsByGameId,
-): BetSlipSelection | null {
-  const ranked = games
-    .map((game) => ({
-      game,
-      score:
-        scoreGameMatch(game.title, match.homeTeam, match.awayTeam) * 3 +
-        scoreLeagueMatch(game.league.name, match.league) * 2 +
-        scoreKickoffProximity(game.startsAt, match.timestamp),
-    }))
-    .sort((a, b) => b.score - a.score);
-
-  const candidate = ranked.find(({ game, score }) => {
-    const conditions = conditionsByGameId[game.gameId] ?? [];
-    return score > 0 && conditions.length > 0 && (conditions[0]?.outcomes?.length ?? 0) > 0;
-  });
-
-  const fallback = ranked.find(({ game }) => {
-    const conditions = conditionsByGameId[game.gameId] ?? [];
-    return conditions.length > 0 && (conditions[0]?.outcomes?.length ?? 0) > 0;
-  });
-
-  const selectedGame = candidate?.game ?? fallback?.game;
-  if (!selectedGame) return null;
-
-  const condition = (conditionsByGameId[selectedGame.gameId] ?? [])[0];
-  const outcome = condition?.outcomes?.[0];
-  if (!condition || !outcome) return null;
-
-  return {
-    gameTitle: selectedGame.title,
-    marketTitle: condition.title ?? `Market ${condition.conditionId}`,
-    outcomeTitle: outcome.title ?? `Outcome ${outcome.outcomeId}`,
-    conditionId: condition.conditionId,
-    outcomeId: outcome.outcomeId,
-    odds: outcome.odds,
-  };
-}
-
-function parseScore(score: string) {
-  const [homeRaw, awayRaw] = score.split("-").map((part) => Number.parseInt(part.trim(), 10));
-  return {
-    homeGoals: Number.isFinite(homeRaw) ? homeRaw : 0,
-    awayGoals: Number.isFinite(awayRaw) ? awayRaw : 0,
-  };
+  if (gameIds.size === 0) return [];
+  return matches.filter((m) => gameIds.has(String(m.id)));
 }
 
 function formatStrategyLabel(name: StrategyName) {
@@ -284,6 +183,7 @@ function EnginePickCard({
               conditionId: "engine",
               outcomeId: "engine",
               odds: "1.00",
+              executable: false,
             })
           }
           className={`rounded-xl border px-3 py-2 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-40 ${
@@ -301,72 +201,44 @@ function EnginePickCard({
   );
 }
 
-function toAnalyticsInput(match: LiveMatch): MatchAnalyticsInput {
-  const { homeGoals, awayGoals } = parseScore(match.score);
-  const minute = match.minute ?? 0;
-  const baselinePressure = Math.max(2, Math.floor(minute / 10));
-  return {
-    ...match,
-    homeGoals,
-    awayGoals,
-    shotsOnTargetHome: match.shotsOnTargetHome ?? homeGoals + baselinePressure,
-    shotsOnTargetAway: match.shotsOnTargetAway ?? awayGoals + Math.max(1, baselinePressure - 1),
-    totalShotsHome: match.totalShotsHome ?? homeGoals * 2 + baselinePressure * 2,
-    totalShotsAway: match.totalShotsAway ?? awayGoals * 2 + baselinePressure * 2 - 1,
-    attacksHome: match.attacksHome ?? baselinePressure * 5,
-    attacksAway: match.attacksAway ?? baselinePressure * 5,
-    dangerousAttacksHome: match.dangerousAttacksHome ?? baselinePressure * 2,
-    dangerousAttacksAway: match.dangerousAttacksAway ?? baselinePressure * 2,
-    possessionHome: match.possessionHome ?? 50,
-    possessionAway: match.possessionAway ?? 50,
-    redCardsHome: match.redCardsHome ?? 0,
-    redCardsAway: match.redCardsAway ?? 0,
-    favoriteOdds: 1.55,
-  };
-}
-
 type DashScreenProps = {
   games: GameData[];
   total: number;
-  placedBets: PlacedBetRecord[];
+  azuroOrders: BetOrderData[];
   onSelect: (selection: BetSlipSelection) => void;
   conditionsByGameId: ConditionsByGameId;
   liveMatches: LiveMatch[];
   liveLoading: boolean;
   liveError: string | null;
   onSelectLive: (match: LiveMatch) => void;
+  onOpenBetTab: () => void;
 };
 
 function DashScreen({
   games,
   total,
-  placedBets,
+  azuroOrders,
   onSelect,
   conditionsByGameId,
   liveMatches,
   liveLoading,
   liveError,
   onSelectLive,
+  onOpenBetTab,
 }: DashScreenProps) {
   const netToday = useMemo(() => {
     const today = new Date().toDateString();
-    return placedBets
-      .filter((bet) => new Date(bet.createdAt).toDateString() === today)
-      .reduce((sum, bet) => {
-        const stake = Number.parseFloat(bet.amount) || 0;
-        const payout = Number.parseFloat(bet.potentialPayout) || 0;
-        if (bet.status === "success") return sum + (payout - stake);
-        if (bet.status === "failed") return sum - stake;
-        return sum;
-      }, 0);
-  }, [placedBets]);
+    return azuroOrders
+      .filter((o) => new Date(o.createdAt).toDateString() === today)
+      .reduce((sum, o) => sum + (azuroBetPnl(o) ?? 0), 0);
+  }, [azuroOrders]);
 
-  const settled = placedBets.filter((bet) => bet.status === "success" || bet.status === "failed");
-  const successful = settled.filter((bet) => bet.status === "success").length;
+  const settled = azuroOrders.filter((o) => o.state === BetOrderState.Settled);
+  const successful = settled.filter((o) => o.result === BetOrderResult.Won).length;
   const hitRate = settled.length ? (successful / settled.length) * 100 : 0;
-  const recent = settled.slice(0, 6).map((bet) => (bet.status === "success" ? "W" : "L"));
+  const recent = settled.slice(0, 6).map((o) => (o.result === BetOrderResult.Won ? "W" : "L"));
 
-  const activeBets = placedBets.filter((bet) => bet.status === "pending").slice(0, 3);
+  const activeBets = azuroOrders.filter(isAzuroBetOpen).slice(0, 3);
   void total;
   void conditionsByGameId;
 
@@ -431,17 +303,18 @@ function DashScreen({
       <GlassCard>
         <div className="mb-3 flex items-center justify-between">
           <p className="text-xs uppercase tracking-[0.18em] text-zinc-400">Active Bets</p>
-          <span className="text-xs text-emerald-300">{activeBets.length} pending</span>
+          <span className="text-xs text-emerald-300">{activeBets.length} open</span>
         </div>
         <div className="space-y-2.5">
           {activeBets.length === 0 ? (
             <div className="rounded-xl border border-zinc-700/60 bg-zinc-900/70 px-3 py-2.5 text-sm text-zinc-400">
-              No pending bets.
+              No open Azuro orders.
             </div>
           ) : (
-            activeBets.map((bet) => (
-              <div key={bet.id} className="rounded-xl border border-zinc-700/60 bg-zinc-900/70 px-3 py-2.5 text-sm text-zinc-200">
-                {bet.outcomeTitle} @ {bet.odds} <span className="float-right text-zinc-500">${bet.amount}</span>
+            activeBets.map((order) => (
+              <div key={order.id} className="rounded-xl border border-zinc-700/60 bg-zinc-900/70 px-3 py-2.5 text-sm text-zinc-200">
+                {formatAzuroBetTitle(order)} · {order.state}{" "}
+                <span className="float-right text-zinc-500">${order.amount.toFixed(2)}</span>
               </div>
             ))
           )}
@@ -455,6 +328,25 @@ function DashScreen({
           loading={liveLoading}
           error={liveError}
           onBet={onSelectLive}
+        />
+      </GlassCard>
+
+      <GlassCard>
+        <StrategyInsightsStrip />
+      </GlassCard>
+
+      <GlassCard className="space-y-3">
+        <div className="flex items-center justify-between">
+          <p className="text-xs uppercase tracking-[0.18em] text-zinc-400">Strategy packages</p>
+          <span className="text-[10px] text-zinc-500">Cached feed • no extra API</span>
+        </div>
+        <StrategyPackagesPanel
+          liveMatches={liveMatches}
+          liveLoading={liveLoading}
+          liveError={liveError}
+          games={games}
+          conditionsByGameId={conditionsByGameId}
+          onOpenBetTab={onOpenBetTab}
         />
       </GlassCard>
 
@@ -489,8 +381,6 @@ type BetScreenProps = {
   liveMatches: LiveMatch[];
   liveLoading: boolean;
   liveError: string | null;
-  placedBets: PlacedBetRecord[];
-  onRefreshPlacedBets: () => void;
 };
 
 function BetScreen({
@@ -499,16 +389,12 @@ function BetScreen({
   liveMatches,
   liveLoading,
   liveError,
-  placedBets,
-  onRefreshPlacedBets,
 }: BetScreenProps) {
   return (
     <BetPage
       liveMatches={liveMatches}
       liveLoading={liveLoading}
       liveError={liveError}
-      placedBets={placedBets}
-      onRefreshPlacedBets={onRefreshPlacedBets}
       recommendSelection={(match) => pickSelectionFromLiveMatch(match, games, conditionsByGameId)}
     />
   );
@@ -530,8 +416,7 @@ type MindScreenProps = {
   liveMatches: LiveMatch[];
   liveLoading: boolean;
   liveError: string | null;
-  placedBets: PlacedBetRecord[];
-  onRefreshPlacedBets: () => void;
+  azuroOrders: BetOrderData[];
   onOpenBetTab: () => void;
 };
 
@@ -541,8 +426,7 @@ function MindScreen({
   liveMatches,
   liveLoading,
   liveError,
-  placedBets,
-  onRefreshPlacedBets,
+  azuroOrders,
   onOpenBetTab,
 }: MindScreenProps) {
   const feed = useMemo(() => {
@@ -571,7 +455,7 @@ function MindScreen({
     void refreshToken;
     if (liveInPlayMatches.length === 0) return [];
     const profile = readLearningProfile();
-    const inputs = liveInPlayMatches.map(toAnalyticsInput);
+    const inputs = liveInPlayMatches.map(liveMatchToAnalyticsInput);
     return evaluateMatchesDecisionFirst(inputs, profile);
   }, [liveInPlayMatches, learningRefresh]);
   const showRejected = false;
@@ -619,12 +503,12 @@ function MindScreen({
   const { address: connectedAddress } = useAccount();
 
   const betMomentumMatches = useMemo(
-    () => filterLiveMatchesForBetGames(liveMatches, placedBets),
-    [liveMatches, placedBets],
+    () => filterLiveMatchesForBetGames(liveMatches, azuroOrders),
+    [liveMatches, azuroOrders],
   );
   const hasBetGamesForMomentum = useMemo(
-    () => placedBets.some((b) => b.status !== "failed" && Boolean(b.gameTitle?.trim())),
-    [placedBets],
+    () => azuroOrders.some((o) => o.conditions.length > 0),
+    [azuroOrders],
   );
 
   async function runPendingCommand(command: ReturnType<typeof parseCommand>) {
@@ -940,10 +824,8 @@ type LamborDashboardProps = {
 
 export function LamborDashboard({ games, conditionsByGameId, total }: LamborDashboardProps) {
   const [activeTab, setActiveTab] = useState<TabKey>("dash");
-  const [placedBets, setPlacedBets] = useState<PlacedBetRecord[]>(
-    () => (typeof window === "undefined" ? [] : readPlacedBets()),
-  );
   const { matches: liveMatches, loading: liveLoading, error: liveError } = useLiveMatches();
+  const { data: azuroOrders = [], refetch: refetchAzuroBets } = useAzuroBets();
 
   function handleSelectLiveMatch(match: LiveMatch) {
     setActiveTab("bet");
@@ -978,13 +860,14 @@ export function LamborDashboard({ games, conditionsByGameId, total }: LamborDash
             <DashScreen
               games={games}
               total={total}
-              placedBets={placedBets}
+              azuroOrders={azuroOrders}
               onSelect={() => setActiveTab("bet")}
               conditionsByGameId={conditionsByGameId}
               liveMatches={liveMatches}
               liveLoading={liveLoading}
               liveError={liveError}
               onSelectLive={handleSelectLiveMatch}
+              onOpenBetTab={() => setActiveTab("bet")}
             />
           )}
           {activeTab === "bet" && (
@@ -994,8 +877,6 @@ export function LamborDashboard({ games, conditionsByGameId, total }: LamborDash
               liveMatches={liveMatches}
               liveLoading={liveLoading}
               liveError={liveError}
-              placedBets={placedBets}
-              onRefreshPlacedBets={() => setPlacedBets(readPlacedBets())}
             />
           )}
           {activeTab === "wall" && <WallScreen />}
@@ -1006,8 +887,7 @@ export function LamborDashboard({ games, conditionsByGameId, total }: LamborDash
               liveMatches={liveMatches}
               liveLoading={liveLoading}
               liveError={liveError}
-              placedBets={placedBets}
-              onRefreshPlacedBets={() => setPlacedBets(readPlacedBets())}
+              azuroOrders={azuroOrders}
               onOpenBetTab={() => setActiveTab("bet")}
             />
           )}
@@ -1037,7 +917,7 @@ export function LamborDashboard({ games, conditionsByGameId, total }: LamborDash
                 key={tab.key}
                 onClick={() => {
                   setActiveTab(tab.key);
-                  setPlacedBets(readPlacedBets());
+                  void refetchAzuroBets();
                 }}
                 className={`rounded-xl py-2 text-center transition ${
                   active ? "bg-emerald-500/20 text-emerald-300 shadow-[0_0_18px_rgba(0,255,163,0.25)]" : "text-zinc-400 hover:text-zinc-200"

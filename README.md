@@ -5,8 +5,9 @@ This repository contains the first implementation slice of a decentralized sport
 Current scope:
 - Next.js App Router foundation
 - Wallet connection with `wagmi` (injected + optional WalletConnect)
-- Single-chain setup on Base Sepolia
-- Server-side prematch games fetch with `@azuro-org/toolkit` `getGamesByFilters`
+- **Polygon mainnet** for Azuro (`@azuro-org/toolkit` `chainsData[137]`)
+- Bets: EIP-712 sign in wallet → `createBet` / `createComboBet` (Azuro API) → relayer → on-chain Core
+- Orders and settlement status from Azuro API / subgraph via `getBetsByBettor`
 
 ## Stack
 
@@ -28,12 +29,11 @@ cp .env.example .env.local
 
 ```env
 NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID=your_project_id_here
-AZURO_ORDER_SUBMIT_URL=https://<azuro-order-endpoint>
-AZURO_ORDER_SUBMIT_API_KEY=optional_server_side_key
+NEXT_PUBLIC_POLYGON_RPC=https://polygon-rpc.com
 ```
 
-If this variable is missing, WalletConnect is disabled and injected wallets (for example MetaMask) still work.
-Order submission is server-routed through `src/app/api/azuro/place-bet/route.ts`, so keep API credentials server-side only.
+If WalletConnect env is missing, WalletConnect is disabled; injected wallets (e.g. MetaMask) still work.
+Bet orders are submitted from the browser with `@azuro-org/toolkit` `createBet` / `createComboBet` to Azuro’s public API for chain 137 (no custom relay route required).
 
 ## Run Locally
 
@@ -46,7 +46,7 @@ Then open [http://localhost:3000](http://localhost:3000).
 
 ## Project Structure
 
-- `src/config/chain.ts` - active network config (Base Sepolia)
+- `src/config/chain.ts` - Polygon mainnet (`AZURO_CHAIN_ID` 137)
 - `src/lib/wagmi/config.ts` - wagmi setup and connectors
 - `src/components/providers/web3-providers.tsx` - React providers
 - `src/components/wallet/wallet-controls.tsx` - connect/switch/disconnect UI

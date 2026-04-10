@@ -1,21 +1,19 @@
 import { LamborDashboard } from "@/components/lambor/lambor-dashboard";
-import { fetchConditionsByGameIds } from "@/lib/azuro/fetch-conditions";
-import { fetchPrematchGames } from "@/lib/azuro/fetch-games";
+import { getPrematchBundleCached } from "@/lib/server/prematch-bundle-cache";
 
-/** Refresh Azuro data periodically (ISR). */
-export const revalidate = 60;
+/** Page can be static; prematch bundle is refreshed in-memory on the server (~90s TTL). */
+export const revalidate = 120;
 
 export default async function HomePage() {
-  const gamesPayload = await fetchPrematchGames({ page: 1, perPage: 24 });
-  const conditionsByGameId = await fetchConditionsByGameIds(gamesPayload.games.map((game) => game.gameId));
+  const bundle = await getPrematchBundleCached();
 
   return (
     <LamborDashboard
-      games={gamesPayload.games}
-      conditionsByGameId={conditionsByGameId}
-      total={gamesPayload.total}
-      page={gamesPayload.page}
-      perPage={gamesPayload.perPage}
+      games={bundle.games}
+      conditionsByGameId={bundle.conditionsByGameId}
+      total={bundle.total}
+      page={bundle.page}
+      perPage={bundle.perPage}
     />
   );
 }

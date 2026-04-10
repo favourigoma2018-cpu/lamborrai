@@ -1,30 +1,40 @@
 "use client";
 
 import { chainsData } from "@azuro-org/toolkit";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import type { Address } from "viem";
-import { useAccount, useSignTypedData } from "wagmi";
+import { useAccount, useChainId, useSignTypedData, useSwitchChain } from "wagmi";
 
-import { AZURO_CHAIN_ID } from "@/config/chain";
-import { pushPlacedBet, readPlacedBets } from "@/lib/bets/local-bets";
+import { AzuroBetsList } from "@/components/bets/azuro-bets-list";
+import { AZURO_CHAIN_ID, targetChain } from "@/config/chain";
+import { useAzuroBets, useInvalidateAzuroBets } from "@/hooks/use-azuro-bets";
+import { useAzuroNewBetListener } from "@/hooks/use-azuro-new-bet-event";
 import {
   prepareBetInteraction,
   type PreparedBetInteraction,
   type SlipSelection,
 } from "@/lib/azuro/prepare-bet";
-import { PlacedBetsList } from "@/components/bets/placed-bets-list";
-import type { PlacedBetRecord } from "@/types/bets";
+import { prepareComboBetInteraction } from "@/lib/azuro/prepare-combo-bet";
+import { submitComboBetOrder, submitOrdinaryBetOrder } from "@/lib/azuro/submit-azuro-order";
+import { ensurePolygonWallet } from "@/lib/wallet/ensure-polygon";
 
 export type BetSlipSelection = SlipSelection & {
   gameTitle: string;
   marketTitle: string;
   outcomeTitle: string;
+  executable?: boolean;
+  matchId?: number;
+  strategyPackageId?: string;
 };
 
 type BetSlipProps = {
   selection: BetSlipSelection | null;
   onClear: () => void;
   onPlaced?: () => void;
+  slipLegCount?: number;
+  parlaySelections?: BetSlipSelection[] | null;
+  onParlayComplete?: () => void;
+  className?: string;
 };
 
 function resolveCoreAddress(): Address | null {
@@ -38,15 +48,29 @@ function resolveCoreAddress(): Address | null {
   return null;
 }
 
-export function BetSlip({ selection, onClear, onPlaced }: BetSlipProps) {
+export function BetSlip({
+  selection,
+  onClear,
+  onPlaced,
+  slipLegCount = 0,
+  parlaySelections = null,
+  onParlayComplete,
+  className = "",
+}: BetSlipProps) {
   const { address } = useAccount();
+  const chainId = useChainId();
+  const { switchChain } = useSwitchChain();
+  const invalidateAzuro = useInvalidateAzuroBets();
+  const { data: azuroOrders = [], isLoading: isLoadingBets } = useAzuroBets();
+  useAzuroNewBetListener();
+
   const [amount, setAmount] = useState("");
-  const [placedBets, setPlacedBets] = useState<PlacedBetRecord[]>([]);
   const [txState, setTxState] = useState<"idle" | "pending" | "success" | "failed">("idle");
   const [isPreparing, setIsPreparing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [prepared, setPrepared] = useState<PreparedBetInteraction | null>(null);
+  const [parlayRunning, setParlayRunning] = useState(false);
   const { signTypedDataAsync } = useSignTypedData();
 
   const potentialPayout = useMemo(() => {
@@ -57,15 +81,22 @@ export function BetSlip({ selection, onClear, onPlaced }: BetSlipProps) {
     return stake * odds;
   }, [amount, selection]);
 
-  const canPrepare = Boolean(selection && address && Number.parseFloat(amount) > 0);
+  const isExecutable = selection?.executable !== false;
+
+  const canPrepare = Boolean(selection && address && Number.parseFloat(amount) > 0 && isExecutable);
   const canPlaceBet = Boolean(canPrepare && prepared && !isPreparing && txState !== "pending");
 
-  useEffect(() => {
-    setPlacedBets(readPlacedBets());
-  }, []);
+  async function ensureAzuroChain() {
+    await ensurePolygonWallet();
+    if (chainId === targetChain.id) return;
+    if (!switchChain) {
+      throw new Error(`Switch your wallet to ${targetChain.name} (chain ${targetChain.id}) for Azuro.`);
+    }
+    await switchChain({ chainId: targetChain.id });
+  }
 
   async function onPrepareTransaction() {
-    if (!selection || !address) return;
+    if (!selection || !address || selection.executable === false) return;
     const coreAddress = resolveCoreAddress();
     if (!coreAddress) {
       setError("Could not resolve Azuro core contract address for this chain.");
@@ -76,6 +107,7 @@ export function BetSlip({ selection, onClear, onPlaced }: BetSlipProps) {
     setPrepared(null);
     setIsPreparing(true);
     try {
+      await ensureAzuroChain();
       const result = await prepareBetInteraction({
         account: address,
         selection,
@@ -91,86 +123,90 @@ export function BetSlip({ selection, onClear, onPlaced }: BetSlipProps) {
   }
 
   async function onPlaceBet() {
-    if (!selection || !address || !prepared) return;
+    if (!selection || !address || !prepared || selection.executable === false) return;
 
     setTxState("pending");
     setError(null);
     setSuccessMessage(null);
 
-    const betId = `${Date.now()}-${selection.conditionId}-${selection.outcomeId}`;
-    const baseRecord: PlacedBetRecord = {
-      id: betId,
-      createdAt: new Date().toISOString(),
-      gameTitle: selection.gameTitle,
-      marketTitle: selection.marketTitle,
-      outcomeTitle: selection.outcomeTitle,
-      amount,
-      odds: selection.odds,
-      potentialPayout: potentialPayout?.toFixed(6) ?? "0",
-      status: "pending",
-    };
-    pushPlacedBet(baseRecord);
-    setPlacedBets(readPlacedBets());
-    onPlaced?.();
-
     try {
-      const signature = await signTypedDataAsync(prepared.typedData);
-
-      const response = await fetch("/api/azuro/place-bet", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          typedData: prepared.typedData,
-          signature,
-          amount,
-          selection: {
-            conditionId: selection.conditionId,
-            outcomeId: selection.outcomeId,
-            odds: selection.odds,
-          },
-        }),
-      });
-
-      const payload = (await response.json()) as {
-        id?: string;
-        orderId?: string;
-        txHash?: string;
-        error?: string;
-        details?: unknown;
-      };
-
-      if (!response.ok) {
-        throw new Error(payload?.error ?? "Order submission failed.");
+      await ensureAzuroChain();
+      const coreAddress = resolveCoreAddress();
+      if (!coreAddress) {
+        throw new Error("Could not resolve Azuro Core contract for this chain.");
       }
 
-      const successRecord: PlacedBetRecord = {
-        ...baseRecord,
-        status: "success",
-        orderId: payload.orderId ?? payload.id,
-        txHash: payload.txHash,
-      };
-      pushPlacedBet(successRecord);
-      setPlacedBets(readPlacedBets());
+      const signature = await signTypedDataAsync(prepared.typedData);
+      await submitOrdinaryBetOrder({
+        account: address,
+        signature,
+        coreAddress,
+        relayerFeeAmount: prepared.fee.relayerFeeAmount,
+        ...prepared.submitPayload,
+      });
+
+      await invalidateAzuro();
       onPlaced?.();
       setTxState("success");
-      setSuccessMessage("Bet order submitted successfully.");
+      setSuccessMessage("Order sent to Azuro. Relayer submits to Polygon — status updates below.");
     } catch (err) {
       const message = err instanceof Error ? err.message : "Bet execution failed.";
-      const failedRecord: PlacedBetRecord = {
-        ...baseRecord,
-        status: "failed",
-        errorMessage: message,
-      };
-      pushPlacedBet(failedRecord);
-      setPlacedBets(readPlacedBets());
-      onPlaced?.();
       setTxState("failed");
       setError(message);
     }
   }
 
+  const parlayLegs = parlaySelections?.filter((x) => x.executable !== false) ?? [];
+  const parlayEligible =
+    parlayLegs.length >= 2 && Number.parseFloat(amount) > 0 && Boolean(address) && !parlayRunning;
+
+  async function onPlaceParlay() {
+    if (!address || !parlayEligible) return;
+    const coreAddress = resolveCoreAddress();
+    if (!coreAddress) {
+      setError("Could not resolve Azuro core contract address for this chain.");
+      return;
+    }
+
+    setParlayRunning(true);
+    setTxState("pending");
+    setError(null);
+    setSuccessMessage(null);
+
+    const n = parlayLegs.length;
+
+    try {
+      await ensureAzuroChain();
+      const prep = await prepareComboBetInteraction({
+        account: address,
+        legs: parlayLegs,
+        totalStakeHuman: amount,
+        coreAddress,
+      });
+      const signature = await signTypedDataAsync(prep.typedData);
+      await submitComboBetOrder({
+        account: address,
+        signature,
+        coreAddress,
+        relayerFeeAmount: prep.fee.relayerFeeAmount,
+        ...prep.submitPayload,
+      });
+      await invalidateAzuro();
+      setTxState("success");
+      setSuccessMessage(`Combo order submitted (${n} legs, one signature).`);
+      onParlayComplete?.();
+      onPlaced?.();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Parlay placement failed.";
+      setTxState("failed");
+      setError(message);
+    } finally {
+      setParlayRunning(false);
+    }
+  }
+
   return (
-    <aside className="sticky top-4 h-fit rounded-xl border border-zinc-800 bg-zinc-900/90 p-4">
+    <aside className={`h-fit rounded-xl border border-zinc-800 bg-zinc-900/90 p-4 ${className}`}>
       <div className="mb-4 flex items-center justify-between">
         <h3 className="text-base font-semibold text-zinc-100">Bet slip</h3>
         {selection ? (
@@ -195,10 +231,15 @@ export function BetSlip({ selection, onClear, onPlaced }: BetSlipProps) {
               <span className="text-zinc-300">{selection.outcomeTitle}</span>
               <span className="font-semibold text-emerald-400">{selection.odds}</span>
             </div>
+            {selection.executable === false ? (
+              <p className="mt-2 text-[11px] text-amber-300">
+                Display-only line (no Azuro market id). Pick a highlighted on-chain odd to prepare a transaction.
+              </p>
+            ) : null}
           </div>
 
           <label className="block text-sm">
-            <span className="mb-1 block text-zinc-300">Bet amount</span>
+            <span className="mb-1 block text-zinc-300">Bet amount (bet token)</span>
             <input
               type="number"
               min="0"
@@ -231,15 +272,40 @@ export function BetSlip({ selection, onClear, onPlaced }: BetSlipProps) {
           <button
             type="button"
             onClick={onPlaceBet}
-            disabled={!canPlaceBet}
+            disabled={!canPlaceBet || parlayRunning}
             className="w-full rounded-md border border-emerald-700 px-4 py-2 text-sm font-semibold text-emerald-300 transition hover:bg-emerald-900/20 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {txState === "pending" ? "Submitting…" : "Sign & place bet"}
+            {txState === "pending" && !parlayRunning ? "Submitting…" : "Sign & place bet"}
           </button>
+
+          {parlayEligible ? (
+            <button
+              type="button"
+              onClick={() => void onPlaceParlay()}
+              disabled={parlayRunning}
+              className="w-full rounded-md bg-emerald-700/40 px-4 py-2 text-sm font-semibold text-emerald-100 transition hover:bg-emerald-600/50 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {parlayRunning
+                ? `Submitting combo… (${parlayLegs.length} legs)`
+                : `Place combo (${parlayLegs.length} legs, one signature)`}
+            </button>
+          ) : null}
+
+          {chainId !== targetChain.id ? (
+            <p className="text-[11px] text-amber-300">
+              Azuro orders are signed on Polygon {targetChain.id}. Approve the network switch when prompted.
+            </p>
+          ) : null}
+
+          {slipLegCount > 1 ? (
+            <p className="text-[11px] text-zinc-500">
+              Acca odds shown in the slip are approximate. Use “Place combo” for an Azuro combo order (single EIP-712 signature, relayer executes on Polygon).
+            </p>
+          ) : null}
 
           {!address ? <p className="text-xs text-amber-300">Connect wallet to prepare order data.</p> : null}
           {txState === "pending" ? (
-            <p className="text-xs text-amber-300">Transaction pending: waiting for signature and order acceptance.</p>
+            <p className="text-xs text-amber-300">Waiting for signature and relayer submission…</p>
           ) : null}
           {txState === "success" && successMessage ? <p className="text-xs text-emerald-300">{successMessage}</p> : null}
           {error ? <p className="text-xs text-red-300">{error}</p> : null}
@@ -251,15 +317,12 @@ export function BetSlip({ selection, onClear, onPlaced }: BetSlipProps) {
               <p>Max bet: {prepared.calculation.maxBet}</p>
               <p>Max payout: {prepared.calculation.maxPayout}</p>
               <p>Relayer fee: {prepared.fee.beautyRelayerFeeAmount}</p>
-              <p className="break-all text-zinc-500">
-                Typed data ready for wallet signing (EIP-712): {JSON.stringify(prepared.typedData).slice(0, 240)}…
-              </p>
             </div>
           ) : null}
 
           <div className="space-y-2 border-t border-zinc-800 pt-3">
-            <p className="text-xs font-medium uppercase tracking-wide text-zinc-400">Placed bets</p>
-            <PlacedBetsList bets={placedBets} />
+            <p className="text-xs font-medium uppercase tracking-wide text-zinc-400">Your orders (Azuro API)</p>
+            <AzuroBetsList orders={azuroOrders} isLoading={isLoadingBets} />
           </div>
         </div>
       )}
