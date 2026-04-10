@@ -22,7 +22,9 @@ import { pickSelectionFromLiveMatch } from "@/lib/lambor/pick-selection-from-liv
 import { executeCommand, parseCommand } from "@/lib/lambor-ai/chat-action-engine";
 import { processLamborStrategy } from "@/lib/lambor-ai/decision-engine";
 import { evaluateMatchesDecisionFirst, riskLevelFromConfidence } from "@/lib/lambor-ai/engine";
-import { readLearningProfile, recordBetResult } from "@/lib/lambor-ai/learning";
+import { readBetResults, readLearningProfile, recordBetResult } from "@/lib/lambor-ai/learning";
+import { buildContext } from "@/lib/lambor-ai/mind-context";
+import { generateMindResponse, type MindResponseMetadata } from "@/lib/lambor-ai/mind-response";
 import { isLiveInPlayMatch } from "@/lib/lambor-ai/live-status";
 import { STRATEGY_ORDER } from "@/lib/lambor-ai/strategies";
 import { liveMatchToAnalyticsInput } from "@/lib/lambor/live-match-analytics";
@@ -420,6 +422,22 @@ type MindScreenProps = {
   onOpenBetTab: () => void;
 };
 
+type MindChatRow =
+  | { role: "user"; text: string; ts?: string }
+  | {
+      role: "assistant";
+      text: string;
+      timestamp?: string;
+      metadata?: MindResponseMetadata;
+      highlight?: string;
+    };
+
+const LAMBOR_MIND_WELCOME: MindChatRow = {
+  role: "assistant",
+  text: "Lambor Mind uses your logged results, on-chain legs, and the live strategy strip. Ask for performance, patterns, loss analysis, or whether to take a named fixture. Transactional commands (Place bet, Status, Deposit, …) still use confirm / yes.",
+  metadata: { mode: "general" },
+};
+
 function MindScreen({
   games,
   conditionsByGameId,
@@ -487,19 +505,12 @@ function MindScreen({
     setLearningRefresh((value) => value + 1);
   }
 
-  const [chatMessages, setChatMessages] = useState<
-    Array<{ role: "user" | "assistant"; text: string }>
-  >([
-    { role: "user", text: "Should I hedge Arsenal +0.5 now?" },
-    {
-      role: "assistant",
-      text: "Hedge 30% at 1.74. Volatility spike expected after minute 88.",
-    },
-  ]);
+  const [chatMessages, setChatMessages] = useState<MindChatRow[]>(() => [{ ...LAMBOR_MIND_WELCOME }]);
   const [chatDraft, setChatDraft] = useState("");
   const [showBetMomentum, setShowBetMomentum] = useState(false);
   const [pendingCommand, setPendingCommand] = useState<ReturnType<typeof parseCommand> | null>(null);
   const [executing, setExecuting] = useState(false);
+  const [mindThinking, setMindThinking] = useState(false);
   const { address: connectedAddress } = useAccount();
   const invalidateAzuroBets = useInvalidateAzuroBets();
 
@@ -514,7 +525,8 @@ function MindScreen({
 
   async function runPendingCommand(command: ReturnType<typeof parseCommand>) {
     setExecuting(true);
-    setChatMessages((prev) => [...prev, { role: "assistant", text: "⏳ Executing..." }]);
+    const ts = new Date().toISOString();
+    setChatMessages((prev) => [...prev, { role: "assistant", text: "Processing transaction…", timestamp: ts }]);
     try {
       const withdrawAddress =
         typeof window === "undefined"
@@ -530,9 +542,15 @@ function MindScreen({
             ? "No high-quality bets available right now."
             : `${visibleDecisionCards.length} actionable opportunities are live.`,
       });
-      setChatMessages((prev) => [...prev, { role: "assistant", text: result.message }]);
+      setChatMessages((prev) => [
+        ...prev,
+        { role: "assistant", text: result.message, timestamp: new Date().toISOString() },
+      ]);
     } catch {
-      setChatMessages((prev) => [...prev, { role: "assistant", text: "❌ Command execution failed." }]);
+      setChatMessages((prev) => [
+        ...prev,
+        { role: "assistant", text: "Command execution failed.", timestamp: new Date().toISOString() },
+      ]);
     } finally {
       setExecuting(false);
       setPendingCommand(null);
@@ -543,7 +561,7 @@ function MindScreen({
     const text = chatDraft.trim().replace(/\s+/g, " ");
     if (!text) return;
     setChatDraft("");
-    setChatMessages((prev) => [...prev, { role: "user", text }]);
+    setChatMessages((prev) => [...prev, { role: "user", text, ts: new Date().toISOString() }]);
 
     if (pendingCommand && /^yes$/i.test(text)) {
       await runPendingCommand(pendingCommand);
@@ -551,19 +569,37 @@ function MindScreen({
     }
     if (pendingCommand && /^(no|cancel)$/i.test(text)) {
       setPendingCommand(null);
-      setChatMessages((prev) => [...prev, { role: "assistant", text: "Cancelled. No action executed." }]);
+      setChatMessages((prev) => [
+        ...prev,
+        { role: "assistant", text: "Cancelled. No action executed.", timestamp: new Date().toISOString() },
+      ]);
       return;
     }
 
     const command = parseCommand(text);
     if (command.intent === "unknown") {
-      setChatMessages((prev) => [
-        ...prev,
-        {
-          role: "assistant",
-          text: "❌ I couldn't parse that command. Try: Place bet Arsenal +0.5, Hedge 30% Arsenal +0.5, Withdraw 10, Deposit 20, Status.",
-        },
-      ]);
+      setMindThinking(true);
+      queueMicrotask(() => {
+        const ctx = buildContext({
+          azuroOrders,
+          betResults: readBetResults(),
+          profile: readLearningProfile(),
+          decisionCards,
+          liveMatches,
+        });
+        const payload = generateMindResponse(text, ctx, decisionCards);
+        setMindThinking(false);
+        setChatMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            text: payload.text,
+            timestamp: payload.timestamp,
+            metadata: payload.metadata,
+            highlight: payload.highlight,
+          },
+        ]);
+      });
       return;
     }
 
@@ -578,7 +614,14 @@ function MindScreen({
             : command.intent === "deposit"
               ? `Confirm deposit ${command.amount ?? "-"}?`
               : "Run status check now?";
-    setChatMessages((prev) => [...prev, { role: "assistant", text: `${confirmationText} Reply \"yes\" or \"no\".` }]);
+    setChatMessages((prev) => [
+      ...prev,
+      {
+        role: "assistant",
+        text: `${confirmationText} Reply \"yes\" or \"no\".`,
+        timestamp: new Date().toISOString(),
+      },
+    ]);
   }
 
   return (
@@ -746,20 +789,66 @@ function MindScreen({
       </GlassCard>
 
       <GlassCard>
-        <p className="mb-3 text-xs uppercase tracking-[0.18em] text-zinc-400">AI Chat</p>
-        <div className="max-h-64 space-y-2 overflow-y-auto pr-1">
-          {chatMessages.map((m, index) => (
-            <div
-              key={`${index}-${m.text.slice(0, 24)}`}
-              className={`max-w-[86%] rounded-xl border p-2.5 text-xs ${
-                m.role === "user"
-                  ? "border-zinc-700 bg-zinc-900/80 text-zinc-300"
-                  : "ml-auto border-emerald-500/40 bg-emerald-500/10 text-emerald-200"
-              }`}
-            >
-              {m.text}
+        <p className="mb-3 text-xs uppercase tracking-[0.18em] text-zinc-400">Lambor Mind</p>
+        <div className="max-h-72 space-y-2 overflow-y-auto pr-1">
+          {chatMessages.map((m, index) => {
+            if (m.role === "user") {
+              return (
+                <div
+                  key={`u-${index}-${m.text.slice(0, 20)}`}
+                  className="max-w-[86%] rounded-xl border border-zinc-700 bg-zinc-900/80 p-2.5 text-xs text-zinc-300"
+                >
+                  <p>{m.text}</p>
+                  {m.ts ? <p className="mt-1 text-[10px] text-zinc-600">{new Date(m.ts).toLocaleTimeString()}</p> : null}
+                </div>
+              );
+            }
+            const decision = m.metadata?.decision;
+            const decisionClass =
+              decision === "APPROVE"
+                ? "border-emerald-500/50 bg-emerald-500/15 text-emerald-200"
+                : decision === "REJECT"
+                  ? "border-red-500/45 bg-red-500/10 text-red-200"
+                  : decision === "CAUTION"
+                    ? "border-amber-500/45 bg-amber-500/10 text-amber-100"
+                    : "border-emerald-500/40 bg-emerald-500/10 text-emerald-200";
+            const bodyText =
+              m.highlight && m.text.startsWith(m.highlight) ? m.text.slice(m.highlight.length).trim() : m.text;
+
+            return (
+              <div
+                key={`a-${index}-${m.timestamp ?? index}`}
+                className={`ml-auto max-w-[92%] rounded-xl border p-2.5 text-xs ${decisionClass}`}
+              >
+                {decision ? (
+                  <span className="mb-1 inline-block rounded border border-current px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide">
+                    {decision}
+                  </span>
+                ) : null}
+                {m.metadata?.mode ? (
+                  <p className="mb-1 text-[10px] uppercase tracking-wide text-zinc-500">Mode · {m.metadata.mode}</p>
+                ) : null}
+                {m.highlight ? (
+                  <p className="border-l-2 border-emerald-500/70 pl-2 font-semibold leading-snug text-zinc-100">{m.highlight}</p>
+                ) : null}
+                <p className="mt-1 whitespace-pre-wrap leading-relaxed text-zinc-300">{bodyText}</p>
+                {m.timestamp ? (
+                  <p className="mt-1.5 text-[10px] text-zinc-600">{new Date(m.timestamp).toLocaleString()}</p>
+                ) : null}
+              </div>
+            );
+          })}
+          {mindThinking ? (
+            <div className="ml-auto max-w-[92%] rounded-xl border border-zinc-600 bg-zinc-900/60 px-3 py-2 text-[11px] text-zinc-400">
+              <span className="inline-flex items-center gap-2">
+                <span className="relative flex h-2 w-2">
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400/60 opacity-75" />
+                  <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-400" />
+                </span>
+                Analyzing session context…
+              </span>
             </div>
-          ))}
+          ) : null}
         </div>
         <form
           className="mt-3 flex gap-2"
@@ -773,14 +862,14 @@ function MindScreen({
             onChange={(event) => setChatDraft(event.target.value)}
             rows={1}
             className="min-h-11 max-h-36 min-w-0 flex-1 resize-y rounded-xl border border-zinc-700 bg-zinc-900/70 px-3 py-2 text-sm text-zinc-100 outline-none transition focus:border-emerald-400 focus:shadow-[0_0_20px_rgba(0,255,163,0.25)]"
-            placeholder="Ask LAMBOR Mind..."
+            placeholder="Performance, patterns, should I bet… or Place bet / Status"
             enterKeyHint="send"
             autoComplete="off"
             aria-label="Message to LAMBOR Mind"
           />
           <button
             type="submit"
-            disabled={!chatDraft.trim() || executing}
+            disabled={!chatDraft.trim() || executing || mindThinking}
             className="flex h-11 shrink-0 items-center justify-center rounded-xl border border-emerald-500/50 bg-emerald-500/15 px-4 text-emerald-300 transition hover:bg-emerald-500/25 disabled:cursor-not-allowed disabled:opacity-40"
             aria-label="Send message"
           >
@@ -801,7 +890,10 @@ function MindScreen({
               type="button"
               onClick={() => {
                 setPendingCommand(null);
-                setChatMessages((prev) => [...prev, { role: "assistant", text: "Cancelled. No action executed." }]);
+                setChatMessages((prev) => [
+                  ...prev,
+                  { role: "assistant", text: "Cancelled. No action executed.", timestamp: new Date().toISOString() },
+                ]);
               }}
               disabled={executing}
               className="rounded-md border border-zinc-600 px-2.5 py-1 text-[11px] font-semibold text-zinc-300 disabled:opacity-40"
