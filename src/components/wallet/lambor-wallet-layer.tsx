@@ -2,14 +2,16 @@
 
 import type { BetOrderData } from "@azuro-org/toolkit";
 import { BetOrderResult, BetOrderState } from "@azuro-org/toolkit";
+import { AnimatePresence, motion } from "framer-motion";
 import { formatUnits } from "ethers";
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { BET_TOKEN } from "@/config/azuro-polygon-contracts";
 import { useLamborWallet } from "@/contexts/lambor-wallet-context";
 import { useAzuroBets } from "@/hooks/use-azuro-bets";
 import { useEthersSigner } from "@/hooks/use-ethers-signer";
 import { usePaymasterBalances } from "@/hooks/use-paymaster-balances";
+import { isAzuroBetOpen, formatAzuroBetTitle } from "@/lib/azuro/bet-helpers";
 import {
   depositForPaymaster,
   formatToken,
@@ -31,6 +33,20 @@ function claimableBetIds(orders: BetOrderData[]): bigint[] {
   }
   return ids;
 }
+
+/** USDT in wallet + full Paymaster balance (free + fee). */
+function totalBalanceUsdLabel(walletWei: bigint, paymasterWei: bigint, decimals: number): string {
+  const sum = walletWei + paymasterWei;
+  try {
+    const n = Number.parseFloat(formatUnits(sum, decimals));
+    if (!Number.isFinite(n)) return "—";
+    return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  } catch {
+    return "—";
+  }
+}
+
+type ToastState = { kind: "success" | "error"; message: string } | null;
 
 export function LamborWalletLayer() {
   const {
@@ -59,7 +75,7 @@ export function LamborWalletLayer() {
     refetch: refetchPm,
   } = usePaymasterBalances();
 
-  const { data: orders = [] } = useAzuroBets();
+  const { data: orders = [], isLoading: ordersLoading } = useAzuroBets();
   const signer = useEthersSigner();
 
   const [depositAmount, setDepositAmount] = useState("");
@@ -67,17 +83,43 @@ export function LamborWalletLayer() {
   const [withdrawFee, setWithdrawFee] = useState("0");
   const [localError, setLocalError] = useState<string | null>(null);
   const [pending, setPending] = useState<"deposit" | "withdraw" | "claim" | null>(null);
+  const [toast, setToast] = useState<ToastState>(null);
+  const autoConnectDone = useRef(false);
 
   const claimIds = useMemo(() => claimableBetIds(orders), [orders]);
+  const pendingSettlement = useMemo(() => orders.filter(isAzuroBetOpen), [orders]);
+  const paymasterTotalWei = useMemo(() => freeBetsWei + feeWei, [freeBetsWei, feeWei]);
 
-  async function onConnect() {
+  const showToast = useCallback((kind: "success" | "error", message: string) => {
+    setToast({ kind, message });
+  }, []);
+
+  const onConnect = useCallback(async () => {
     setLocalError(null);
     try {
       await connectWallet();
     } catch (e) {
-      setLocalError(e instanceof Error ? e.message : "Connection failed.");
+      const msg = e instanceof Error ? e.message : "Connection failed.";
+      setLocalError(msg);
+      showToast("error", msg);
     }
-  }
+  }, [connectWallet, showToast]);
+
+  /** One-time auto connect when MetaMask is present (uses existing connectWallet). */
+  useEffect(() => {
+    if (autoConnectDone.current) return;
+    if (!isMetaMaskAvailable || isConnected || isConnecting) return;
+    autoConnectDone.current = true;
+    void connectWallet().catch(() => {
+      autoConnectDone.current = false;
+    });
+  }, [isMetaMaskAvailable, isConnected, isConnecting, connectWallet]);
+
+  useEffect(() => {
+    if (!toast) return;
+    const t = window.setTimeout(() => setToast(null), 4000);
+    return () => window.clearTimeout(t);
+  }, [toast]);
 
   async function refreshAll() {
     await refetchPm();
@@ -99,8 +141,11 @@ export function LamborWalletLayer() {
       );
       setDepositAmount("");
       await refreshAll();
+      showToast("success", "Deposit submitted successfully.");
     } catch (e) {
-      setLocalError(e instanceof Error ? e.message : "Deposit failed.");
+      const msg = e instanceof Error ? e.message : "Deposit failed.";
+      setLocalError(msg);
+      showToast("error", msg);
     } finally {
       setPending(null);
     }
@@ -115,8 +160,11 @@ export function LamborWalletLayer() {
       setWithdrawFree("");
       setWithdrawFee("0");
       await refreshAll();
+      showToast("success", "Withdrawal submitted.");
     } catch (e) {
-      setLocalError(e instanceof Error ? e.message : "Withdraw failed.");
+      const msg = e instanceof Error ? e.message : "Withdraw failed.";
+      setLocalError(msg);
+      showToast("error", msg);
     } finally {
       setPending(null);
     }
@@ -129,8 +177,11 @@ export function LamborWalletLayer() {
     try {
       await withdrawPayoutsFromPaymaster(signer, claimIds);
       await refreshAll();
+      showToast("success", "Payout claim submitted.");
     } catch (e) {
-      setLocalError(e instanceof Error ? e.message : "Claim failed.");
+      const msg = e instanceof Error ? e.message : "Claim failed.";
+      setLocalError(msg);
+      showToast("error", msg);
     } finally {
       setPending(null);
     }
@@ -138,215 +189,333 @@ export function LamborWalletLayer() {
 
   const busy = pending !== null;
   const balLoading = walletNativeLoading || pmLoading;
+  const networkBlocked = isConnected && !isPolygon;
+  const actionsDisabled = busy || networkBlocked || !isPolygon;
+  const totalBalanceDisplay = totalBalanceUsdLabel(walletTokenWei, paymasterTotalWei, BET_TOKEN.decimals);
 
   return (
-    <div className="space-y-4">
-      <div className="rounded-2xl border border-emerald-500/35 bg-zinc-900/60 p-4 shadow-[0_0_28px_rgba(0,255,163,0.14)]">
-        <p className="text-xs uppercase tracking-[0.18em] text-zinc-400">Lambor · Azuro PayMaster</p>
-        <p className="mt-2 text-sm text-zinc-500">
-          MetaMask + Polygon (137) only. Deposits use <code className="text-zinc-400">depositFor</code>, claims use{" "}
-          <code className="text-zinc-400">withdrawPayouts</code> — all signed in MetaMask (ethers.js).
-        </p>
-      </div>
+    <div className="relative mx-auto w-full max-w-md space-y-4 pb-2">
+      {/* Toast */}
+      <AnimatePresence>
+        {toast ? (
+          <motion.div
+            initial={{ opacity: 0, y: -8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            className={`fixed left-1/2 top-20 z-50 max-w-[min(100vw-2rem,24rem)] -translate-x-1/2 rounded-xl border px-4 py-2.5 text-center text-sm font-medium shadow-lg ${
+              toast.kind === "success"
+                ? "border-emerald-500/50 bg-emerald-950/95 text-emerald-100"
+                : "border-red-500/45 bg-red-950/95 text-red-100"
+            }`}
+          >
+            {toast.message}
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
 
+      {/* MetaMask missing */}
       {!isMetaMaskAvailable ? (
-        <p className="rounded-xl border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-200">
-          MetaMask is required.{" "}
-          <a href="https://metamask.io" target="_blank" rel="noreferrer" className="underline">
+        <div className="rounded-2xl border border-red-500/35 bg-red-500/10 p-4 text-center shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]">
+          <p className="text-sm font-medium text-red-100">MetaMask not detected</p>
+          <p className="mt-1 text-xs text-red-200/80">
+            Install MetaMask to connect to Polygon and use Lambor.
+          </p>
+          <a
+            href="https://metamask.io"
+            target="_blank"
+            rel="noreferrer"
+            className="mt-3 inline-flex rounded-xl bg-red-500/20 px-4 py-2 text-sm font-semibold text-red-100 underline-offset-2 hover:bg-red-500/30"
+          >
             Install MetaMask
           </a>
-        </p>
+        </div>
       ) : null}
 
-      {!isConnected ? (
-        <button
-          type="button"
-          onClick={() => void onConnect()}
-          disabled={!isMetaMaskAvailable || isConnecting}
-          className="w-full rounded-xl bg-emerald-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          {isConnecting ? "Connecting…" : "Connect MetaMask (Polygon)"}
-        </button>
-      ) : (
-        <div className="space-y-4">
-          <div className="grid grid-cols-2 gap-2 sm:gap-3">
-            <button
-              type="button"
-              onClick={() => setWalletMode("deposit")}
-              className={`rounded-xl border px-3 py-2.5 text-sm font-semibold transition ${
-                walletMode === "deposit"
-                  ? "border-emerald-500/60 bg-emerald-500/15 text-emerald-200"
-                  : "border-zinc-700 bg-zinc-900/50 text-zinc-400 hover:border-zinc-600"
-              }`}
-            >
-              Deposit
-            </button>
-            <button
-              type="button"
-              onClick={() => setWalletMode("withdraw")}
-              className={`rounded-xl border px-3 py-2.5 text-sm font-semibold transition ${
-                walletMode === "withdraw"
-                  ? "border-emerald-500/60 bg-emerald-500/15 text-emerald-200"
-                  : "border-zinc-700 bg-zinc-900/50 text-zinc-400 hover:border-zinc-600"
-              }`}
-            >
-              Withdraw
-            </button>
+      {/* Connect — primary CTA */}
+      {isMetaMaskAvailable && !isConnected ? (
+        <div className="space-y-3">
+          {isConnecting ? (
+            <p className="text-center text-sm text-emerald-200/90">Connecting…</p>
+          ) : null}
+          <button
+            type="button"
+            onClick={() => void onConnect()}
+            disabled={isConnecting}
+            className="w-full rounded-2xl bg-gradient-to-r from-emerald-600 to-emerald-500 px-5 py-4 text-base font-semibold text-white shadow-[0_0_32px_rgba(0,255,163,0.25)] transition hover:from-emerald-500 hover:to-emerald-400 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {isConnecting ? "Connecting…" : "Connect Wallet (Polygon)"}
+          </button>
+          <p className="text-center text-[11px] text-zinc-500">Polygon Mainnet · chain 137</p>
+        </div>
+      ) : null}
+
+      {/* Wrong network gate */}
+      {isConnected && networkBlocked ? (
+        <div className="rounded-2xl border border-amber-500/40 bg-gradient-to-b from-amber-500/15 to-zinc-900/80 p-5 text-center shadow-[0_0_24px_rgba(245,158,11,0.12)]">
+          <p className="text-sm font-semibold text-amber-100">Wrong network</p>
+          <p className="mt-1 text-xs text-amber-200/80">Switch to Polygon Mainnet to use your wallet.</p>
+          <button
+            type="button"
+            onClick={() => void switchToPolygon()}
+            className="mt-4 w-full rounded-xl bg-amber-500 px-4 py-3 text-sm font-semibold text-zinc-950 shadow-lg transition hover:bg-amber-400"
+          >
+            Switch to Polygon
+          </button>
+        </div>
+      ) : null}
+
+      {/* Dashboard — only when connected + Polygon */}
+      {isConnected && isPolygon ? (
+        <>
+          {/* SECTION A — Total balance */}
+          <div className="rounded-3xl border border-emerald-500/25 bg-gradient-to-b from-zinc-900/90 to-zinc-950/95 px-6 py-8 text-center shadow-[0_0_40px_rgba(0,255,163,0.08)]">
+            {balLoading ? (
+              <p className="text-sm text-emerald-200/80">Fetching balance…</p>
+            ) : (
+              <>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-zinc-500">Total balance</p>
+                <p className="mt-2 text-4xl font-bold tabular-nums tracking-tight text-white">
+                  <span className="text-zinc-400">$</span>
+                  {totalBalanceDisplay}
+                </p>
+                <p className="mt-2 text-[11px] text-zinc-500">
+                  Wallet + Paymaster · {BET_TOKEN.symbol} (USD-pegged)
+                </p>
+              </>
+            )}
           </div>
 
-          {!isPolygon ? (
-            <div className="space-y-2 rounded-xl border border-amber-500/40 bg-amber-500/10 p-3">
-              <p className="text-sm text-amber-200">Switch to Polygon Mainnet (chain 137).</p>
-              <button
-                type="button"
-                onClick={() => void switchToPolygon()}
-                className="w-full rounded-lg bg-amber-600 px-3 py-2 text-sm font-semibold text-white hover:bg-amber-500"
-              >
-                Switch network
-              </button>
-            </div>
-          ) : null}
-
-          <div className="rounded-2xl border border-zinc-700/70 bg-zinc-900/55 p-4">
-            <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Wallet</p>
-            <p className="mt-1 font-mono text-sm text-emerald-300">{depositAddress ? shortenAddress(depositAddress) : "—"}</p>
-
-            <div className="mt-3 space-y-2 text-sm">
-              <div className="flex justify-between gap-2 border-b border-zinc-800 pb-2">
-                <span className="text-zinc-500">MATIC</span>
-                <span className="font-semibold text-zinc-100">{balLoading ? "…" : nativeBalanceFormatted}</span>
+          {/* SECTION B — Wallet card */}
+          <div className="rounded-2xl border border-zinc-700/60 bg-zinc-900/50 p-4 shadow-inner">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-500">Your wallet</p>
+                <p className="mt-1 truncate font-mono text-sm text-emerald-300">
+                  {depositAddress ? shortenAddress(depositAddress) : "—"}
+                </p>
               </div>
-              <div className="flex justify-between gap-2 border-b border-zinc-800 pb-2">
-                <span className="text-zinc-500">{BET_TOKEN.symbol} (wallet)</span>
-                <span className="font-semibold text-zinc-100">
+              <span className="shrink-0 rounded-full border border-emerald-500/35 bg-emerald-500/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-emerald-300">
+                On-chain
+              </span>
+            </div>
+            <div className="mt-4 rounded-xl border border-zinc-800/80 bg-zinc-950/50 px-3 py-2.5">
+              <p className="text-[10px] uppercase tracking-wide text-zinc-500">Available to bet</p>
+              <p className="mt-0.5 text-lg font-semibold tabular-nums text-emerald-200">
+                {balLoading ? "…" : formatToken(freeBetsWei, BET_TOKEN.decimals, BET_TOKEN.symbol)}
+              </p>
+              <p className="mt-1 text-[10px] text-zinc-600">Paymaster free balance</p>
+            </div>
+            <div className="mt-3 grid grid-cols-2 gap-2 text-[11px]">
+              <div className="rounded-lg border border-zinc-800/80 bg-black/20 px-2 py-1.5">
+                <span className="text-zinc-500">Wallet</span>
+                <p className="font-medium text-zinc-200">
                   {balLoading ? "…" : formatToken(walletTokenWei, BET_TOKEN.decimals, BET_TOKEN.symbol)}
-                </span>
+                </p>
               </div>
-              <div className="flex justify-between gap-2 border-b border-zinc-800 pb-2">
-                <span className="text-zinc-500">PayMaster free</span>
-                <span className="font-semibold text-emerald-200/90">
-                  {balLoading ? "…" : formatToken(freeBetsWei, BET_TOKEN.decimals, BET_TOKEN.symbol)}
-                </span>
-              </div>
-              <div className="flex justify-between gap-2">
-                <span className="text-zinc-500">PayMaster fee</span>
-                <span className="font-semibold text-zinc-100">
+              <div className="rounded-lg border border-zinc-800/80 bg-black/20 px-2 py-1.5">
+                <span className="text-zinc-500">Fee pool</span>
+                <p className="font-medium text-zinc-200">
                   {balLoading ? "…" : formatToken(feeWei, BET_TOKEN.decimals, BET_TOKEN.symbol)}
-                </span>
+                </p>
               </div>
             </div>
-            <p className="mt-2 text-[11px] text-zinc-600">
-              Stake from <span className="text-zinc-400">PayMaster free</span> balance. Deposit wallet USDT first, then deposit
-              into PayMaster.
-            </p>
+            <p className="mt-2 text-[10px] text-zinc-600">Gas: {balLoading ? "…" : nativeBalanceFormatted}</p>
           </div>
 
-          {isPolygon && depositAddress ? (
-            <div className="space-y-2 rounded-xl border border-zinc-800 bg-zinc-950/50 p-3">
-              <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Claim winnings</p>
-              <p className="text-[11px] text-zinc-500">
-                Pending on-chain claims: {claimIds.length}. Auto-claim runs in background; you can also claim manually.
-              </p>
-              <button
-                type="button"
-                disabled={busy || claimIds.length === 0 || !signer}
-                onClick={() => void onClaimPayouts()}
-                className="w-full rounded-xl border border-emerald-500/50 bg-emerald-500/10 py-2.5 text-sm font-semibold text-emerald-200 transition hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                {pending === "claim" ? "Confirm in MetaMask…" : `Claim payouts (${claimIds.length})`}
-              </button>
-            </div>
+          {/* Claim row */}
+          {depositAddress && claimIds.length > 0 ? (
+            <button
+              type="button"
+              disabled={busy || !signer || actionsDisabled}
+              onClick={() => void onClaimPayouts()}
+              className="w-full rounded-2xl border border-emerald-400/30 bg-emerald-500/10 py-3 text-sm font-semibold text-emerald-200 transition hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {pending === "claim" ? "Processing transaction…" : `Claim winnings (${claimIds.length})`}
+            </button>
           ) : null}
 
-          {walletMode === "deposit" && isPolygon ? (
-            <div className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-950/40 p-3">
-              <p className="text-sm text-zinc-400">
-                Approve + <code className="text-zinc-500">depositFor</code>(your address, amount, 0 fee) on PayMaster.
-              </p>
-              <label className="block text-xs text-zinc-500">
-                Amount ({BET_TOKEN.symbol})
-                <input
-                  type="number"
-                  min="0"
-                  step="any"
-                  value={depositAmount}
-                  onChange={(e) => setDepositAmount(e.target.value)}
-                  placeholder="0.00"
-                  className="mt-1 w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 outline-none ring-emerald-600/30 focus:ring"
-                />
-              </label>
+          {/* SECTION C — Deposit / Withdraw */}
+          <div className="overflow-hidden rounded-2xl border border-zinc-700/60 bg-zinc-900/40 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+            <div className="grid grid-cols-2 gap-0 p-1">
               <button
                 type="button"
-                disabled={busy || !signer || Number.parseFloat(depositAmount) <= 0}
-                onClick={() => void onDepositToPaymaster()}
-                className="w-full rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-40"
+                onClick={() => setWalletMode("deposit")}
+                className={`relative rounded-xl py-3 text-sm font-semibold transition ${
+                  walletMode === "deposit"
+                    ? "bg-zinc-800 text-emerald-200 shadow-[0_0_20px_rgba(0,255,163,0.12)]"
+                    : "text-zinc-500 hover:text-zinc-300"
+                }`}
               >
-                {pending === "deposit" ? "Depositing…" : "Deposit to PayMaster"}
+                Deposit
+                {walletMode === "deposit" ? (
+                  <motion.span
+                    layoutId="walletTab"
+                    className="absolute inset-0 -z-10 rounded-xl border border-emerald-500/20 bg-emerald-500/5"
+                    transition={{ type: "spring", stiffness: 400, damping: 30 }}
+                  />
+                ) : null}
+              </button>
+              <button
+                type="button"
+                onClick={() => setWalletMode("withdraw")}
+                className={`relative rounded-xl py-3 text-sm font-semibold transition ${
+                  walletMode === "withdraw"
+                    ? "bg-zinc-800 text-emerald-200 shadow-[0_0_20px_rgba(0,255,163,0.12)]"
+                    : "text-zinc-500 hover:text-zinc-300"
+                }`}
+              >
+                Withdraw
+                {walletMode === "withdraw" ? (
+                  <motion.span
+                    layoutId="walletTab"
+                    className="absolute inset-0 -z-10 rounded-xl border border-emerald-500/20 bg-emerald-500/5"
+                    transition={{ type: "spring", stiffness: 400, damping: 30 }}
+                  />
+                ) : null}
               </button>
             </div>
-          ) : null}
 
-          {walletMode === "withdraw" && isPolygon ? (
-            <div className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-950/40 p-3">
-              <p className="text-sm text-zinc-400">
-                <code className="text-zinc-500">withdraw</code>(freeBetAmount, feeAmount) — pulls USDT from PayMaster to your
-                wallet.
-              </p>
-              <label className="block text-xs text-zinc-500">
-                Free bet fund ({BET_TOKEN.symbol})
-                <input
-                  type="number"
-                  min="0"
-                  step="any"
-                  value={withdrawFree}
-                  onChange={(e) => setWithdrawFree(e.target.value)}
-                  placeholder="0"
-                  className="mt-1 w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 outline-none ring-emerald-600/30 focus:ring"
-                />
-              </label>
-              <label className="block text-xs text-zinc-500">
-                Fee fund ({BET_TOKEN.symbol})
-                <input
-                  type="number"
-                  min="0"
-                  step="any"
-                  value={withdrawFee}
-                  onChange={(e) => setWithdrawFee(e.target.value)}
-                  placeholder="0"
-                  className="mt-1 w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 outline-none ring-emerald-600/30 focus:ring"
-                />
-              </label>
-              <p className="text-[10px] text-zinc-600">
-                Max free: {formatUnits(freeBetsWei, BET_TOKEN.decimals)} · Max fee: {formatUnits(feeWei, BET_TOKEN.decimals)}
-              </p>
-              <button
-                type="button"
-                disabled={
-                  busy ||
-                  !signer ||
-                  (Number.parseFloat(withdrawFree) <= 0 && Number.parseFloat(withdrawFee || "0") <= 0)
-                }
-                onClick={() => void onWithdrawFromPaymaster()}
-                className="w-full rounded-xl bg-emerald-700/50 px-4 py-2.5 text-sm font-semibold text-emerald-100 transition hover:bg-emerald-600/50 disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                {pending === "withdraw" ? "Withdrawing…" : "Withdraw from PayMaster"}
-              </button>
+            <AnimatePresence mode="wait">
+              {walletMode === "deposit" ? (
+                <motion.div
+                  key="dep"
+                  initial={{ opacity: 0, x: -6 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: 6 }}
+                  transition={{ duration: 0.18 }}
+                  className="space-y-3 border-t border-zinc-800/80 p-4"
+                >
+                  <p className="text-xs text-zinc-500">
+                    Move {BET_TOKEN.symbol} from your wallet into Azuro PayMaster to bet.
+                  </p>
+                  <label className="block text-xs font-medium text-zinc-400">
+                    Amount
+                    <input
+                      type="number"
+                      min="0"
+                      step="any"
+                      value={depositAmount}
+                      onChange={(e) => setDepositAmount(e.target.value)}
+                      placeholder="0.00"
+                      disabled={actionsDisabled}
+                      className="mt-1.5 w-full rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-3 text-base text-zinc-100 outline-none ring-emerald-500/20 focus:ring-2 disabled:opacity-50"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    disabled={actionsDisabled || !signer || Number.parseFloat(depositAmount) <= 0}
+                    onClick={() => void onDepositToPaymaster()}
+                    className="w-full rounded-xl bg-emerald-600 py-3.5 text-sm font-semibold text-white shadow-[0_8px_24px_rgba(0,255,163,0.2)] transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {pending === "deposit" ? "Processing transaction…" : "Deposit"}
+                  </button>
+                </motion.div>
+              ) : (
+                <motion.div
+                  key="wdr"
+                  initial={{ opacity: 0, x: 6 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: -6 }}
+                  transition={{ duration: 0.18 }}
+                  className="space-y-3 border-t border-zinc-800/80 p-4"
+                >
+                  <p className="text-xs text-zinc-500">Withdraw from PayMaster back to your wallet.</p>
+                  <label className="block text-xs font-medium text-zinc-400">
+                    Free bet amount
+                    <input
+                      type="number"
+                      min="0"
+                      step="any"
+                      value={withdrawFree}
+                      onChange={(e) => setWithdrawFree(e.target.value)}
+                      placeholder="0"
+                      disabled={actionsDisabled}
+                      className="mt-1.5 w-full rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-3 text-base text-zinc-100 outline-none focus:ring-2 focus:ring-emerald-500/25 disabled:opacity-50"
+                    />
+                  </label>
+                  <label className="block text-xs font-medium text-zinc-400">
+                    Fee amount
+                    <input
+                      type="number"
+                      min="0"
+                      step="any"
+                      value={withdrawFee}
+                      onChange={(e) => setWithdrawFee(e.target.value)}
+                      placeholder="0"
+                      disabled={actionsDisabled}
+                      className="mt-1.5 w-full rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-3 text-base text-zinc-100 outline-none focus:ring-2 focus:ring-emerald-500/25 disabled:opacity-50"
+                    />
+                  </label>
+                  <p className="text-[10px] text-zinc-600">
+                    Max free {formatUnits(freeBetsWei, BET_TOKEN.decimals)} · Max fee{" "}
+                    {formatUnits(feeWei, BET_TOKEN.decimals)}
+                  </p>
+                  <button
+                    type="button"
+                    disabled={
+                      actionsDisabled ||
+                      !signer ||
+                      (Number.parseFloat(withdrawFree) <= 0 && Number.parseFloat(withdrawFee || "0") <= 0)
+                    }
+                    onClick={() => void onWithdrawFromPaymaster()}
+                    className="w-full rounded-xl border border-emerald-500/40 bg-emerald-500/10 py-3.5 text-sm font-semibold text-emerald-200 transition hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {pending === "withdraw" ? "Processing transaction…" : "Withdraw"}
+                  </button>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+
+          {/* SECTION D — Pending settlement */}
+          <div className="rounded-2xl border border-zinc-700/60 bg-zinc-900/35 p-4">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-500">Awaiting settlement</p>
+              {ordersLoading ? (
+                <span className="text-[10px] text-zinc-500">Loading…</span>
+              ) : null}
             </div>
-          ) : null}
+            {pendingSettlement.length === 0 ? (
+              <p className="mt-3 text-sm text-zinc-500">No open bets waiting for settlement.</p>
+            ) : (
+              <ul className="mt-3 max-h-64 space-y-2 overflow-y-auto pr-1">
+                {pendingSettlement.map((order) => {
+                  const title = formatAzuroBetTitle(order);
+                  const potential = order.amount * order.odds;
+                  return (
+                    <li
+                      key={order.id}
+                      className="rounded-xl border border-zinc-800/90 bg-black/25 px-3 py-2.5 text-xs"
+                    >
+                      <p className="font-medium text-zinc-200">{title}</p>
+                      <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] text-zinc-500">
+                        <span>Stake {order.amount.toFixed(2)}</span>
+                        <span>Odds {order.odds.toFixed(2)}</span>
+                        <span className="text-emerald-400/90">~{potential.toFixed(2)} if win</span>
+                      </div>
+                      <p className="mt-1.5 text-[10px] font-medium uppercase tracking-wide text-amber-200/90">
+                        Awaiting settlement
+                      </p>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
 
           <button
             type="button"
             onClick={() => disconnectWallet()}
-            className="w-full rounded-xl border border-zinc-600 px-4 py-2 text-sm text-zinc-300 hover:bg-zinc-800/70"
+            className="w-full rounded-xl border border-zinc-700 py-3 text-sm font-medium text-zinc-400 transition hover:border-zinc-600 hover:text-zinc-200"
           >
-            Disconnect
+            Disconnect wallet
           </button>
-        </div>
-      )}
+        </>
+      ) : null}
 
-      {connectError ? <p className="text-xs text-red-300">{connectError.message}</p> : null}
-      {localError ? <p className="text-xs text-red-300">{localError}</p> : null}
-      {pmError ? <p className="text-xs text-red-300">{pmError.message}</p> : null}
+      {connectError ? <p className="text-center text-xs text-red-400">{connectError.message}</p> : null}
+      {localError ? <p className="text-center text-xs text-red-400">{localError}</p> : null}
+      {pmError ? <p className="text-center text-xs text-red-400">{pmError.message}</p> : null}
     </div>
   );
 }
