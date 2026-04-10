@@ -1,5 +1,7 @@
 import { polygon } from "viem/chains";
 
+import { getMetaMaskProvider } from "@/lib/wallet/metamask";
+
 const rpcUrl = process.env.NEXT_PUBLIC_POLYGON_RPC?.trim() || "https://polygon-rpc.com";
 
 const POLYGON_HEX = `0x${polygon.id.toString(16)}` as const;
@@ -9,8 +11,9 @@ const POLYGON_HEX = `0x${polygon.id.toString(16)}` as const;
  */
 export async function ensurePolygonWallet(): Promise<void> {
   if (typeof window === "undefined") return;
-  const eth = (window as Window & { ethereum?: { request: (a: { method: string; params?: unknown[] }) => Promise<unknown> } })
-    .ethereum;
+  const eth =
+    getMetaMaskProvider() ??
+    (window as Window & { ethereum?: { request: (a: { method: string; params?: unknown[] }) => Promise<unknown> } }).ethereum;
   if (!eth?.request) return;
 
   try {

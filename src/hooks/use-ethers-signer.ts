@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { useAccount, useChainId } from "wagmi";
 
 import { AZURO_CHAIN_ID } from "@/config/chain";
+import { getMetaMaskProvider } from "@/lib/wallet/metamask";
 
 /** MetaMask signer via ethers v6 `BrowserProvider` — Polygon only in UI. */
 export function useEthersSigner(): JsonRpcSigner | null {
@@ -17,11 +18,14 @@ export function useEthersSigner(): JsonRpcSigner | null {
       setSigner(null);
       return;
     }
-    const eth = (window as unknown as { ethereum?: import("ethers").Eip1193Provider }).ethereum;
-    if (!eth) {
+    const raw =
+      getMetaMaskProvider() ??
+      (window as unknown as { ethereum?: import("ethers").Eip1193Provider }).ethereum;
+    if (!raw || typeof raw.request !== "function") {
       setSigner(null);
       return;
     }
+    const eth = raw as import("ethers").Eip1193Provider;
     let cancelled = false;
     const bp = new BrowserProvider(eth);
     bp.getSigner()

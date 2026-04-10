@@ -55,9 +55,34 @@ export function LamborWalletProvider({ children }: { children: ReactNode }) {
 
   const [walletMode, setWalletMode] = useState<WalletMode>("deposit");
   const [withdrawAddress, setWithdrawAddressState] = useState("");
+  /** MetaMask can inject after first paint (mobile WebViews); keep UI in sync. */
+  const [metaMaskDetected, setMetaMaskDetected] = useState(() =>
+    typeof window !== "undefined" ? isMetaMaskAvailable() : false,
+  );
 
   useEffect(() => {
     setWithdrawAddressState(readWithdrawAddress());
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const refresh = () => {
+      setMetaMaskDetected(isMetaMaskAvailable());
+    };
+    refresh();
+    window.addEventListener("ethereum#initialized", refresh as EventListener);
+    const poll = setInterval(refresh, 400);
+    const stopPoll = setTimeout(() => clearInterval(poll), 10_000);
+    const onVis = () => refresh();
+    window.addEventListener("focus", onVis);
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      window.removeEventListener("ethereum#initialized", refresh as EventListener);
+      clearInterval(poll);
+      clearTimeout(stopPoll);
+      window.removeEventListener("focus", onVis);
+      document.removeEventListener("visibilitychange", onVis);
+    };
   }, []);
 
   const setWithdrawAddress = useCallback((value: string) => {
@@ -190,7 +215,7 @@ export function LamborWalletProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<LamborWalletContextValue>(
     () => ({
-      isMetaMaskAvailable: isMetaMaskAvailable(),
+      isMetaMaskAvailable: metaMaskDetected,
       depositAddress: address,
       withdrawAddress,
       setWithdrawAddress,
@@ -217,6 +242,7 @@ export function LamborWalletProvider({ children }: { children: ReactNode }) {
     }),
     [
       address,
+      metaMaskDetected,
       withdrawAddress,
       setWithdrawAddress,
       walletMode,

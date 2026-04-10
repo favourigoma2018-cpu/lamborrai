@@ -8,6 +8,7 @@ import { useAccount, useChainId } from "wagmi";
 import { BET_TOKEN } from "@/config/azuro-polygon-contracts";
 import { AZURO_CHAIN_ID } from "@/config/chain";
 import { readErc20Balance, readPaymasterBalances } from "@/lib/azuro/paymaster-ethers";
+import { getMetaMaskProvider } from "@/lib/wallet/metamask";
 import { PAYMASTER_BALANCE_QUERY_KEY } from "@/lib/queries/keys";
 
 export type PaymasterBalances = {
@@ -31,8 +32,11 @@ export function usePaymasterBalances(): PaymasterBalances {
     queryKey: [...PAYMASTER_BALANCE_QUERY_KEY, address, chainId],
     queryFn: async () => {
       if (typeof window === "undefined") throw new Error("SSR");
-      const eth = (window as unknown as { ethereum?: import("ethers").Eip1193Provider }).ethereum;
-      if (!eth || !address) throw new Error("No provider");
+      const raw =
+        getMetaMaskProvider() ??
+        (window as unknown as { ethereum?: import("ethers").Eip1193Provider }).ethereum;
+      if (!raw || typeof raw.request !== "function" || !address) throw new Error("No provider");
+      const eth = raw as import("ethers").Eip1193Provider;
       const provider = new BrowserProvider(eth);
       const [wallet, pm] = await Promise.all([
         readErc20Balance(provider, BET_TOKEN.address, address),

@@ -90,6 +90,12 @@ export function LamborWalletLayer() {
   const pendingSettlement = useMemo(() => orders.filter(isAzuroBetOpen), [orders]);
   const paymasterTotalWei = useMemo(() => freeBetsWei + feeWei, [freeBetsWei, feeWei]);
 
+  /** Opens this dapp inside MetaMask mobile (injected provider + connect flow). */
+  const openInMetaMaskUrl = useMemo(() => {
+    if (typeof window === "undefined") return "https://metamask.io/download/";
+    return `https://metamask.app.link/dapp/${encodeURIComponent(window.location.href)}`;
+  }, []);
+
   const showToast = useCallback((kind: "success" | "error", message: string) => {
     setToast({ kind, message });
   }, []);
@@ -213,21 +219,30 @@ export function LamborWalletLayer() {
         ) : null}
       </AnimatePresence>
 
-      {/* MetaMask missing */}
+      {/* MetaMask missing — desktop: extension; mobile: use MetaMask in-app browser or deep link */}
       {!isMetaMaskAvailable ? (
         <div className="rounded-2xl border border-red-500/35 bg-red-500/10 p-4 text-center shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]">
-          <p className="text-sm font-medium text-red-100">MetaMask not detected</p>
+          <p className="text-sm font-medium text-red-100">MetaMask not detected in this browser</p>
           <p className="mt-1 text-xs text-red-200/80">
-            Install MetaMask to connect to Polygon and use Lambor.
+            On your phone, open this site from the Browser tab inside the MetaMask app, or use the button below to
+            launch MetaMask with this page.
           </p>
-          <a
-            href="https://metamask.io"
-            target="_blank"
-            rel="noreferrer"
-            className="mt-3 inline-flex rounded-xl bg-red-500/20 px-4 py-2 text-sm font-semibold text-red-100 underline-offset-2 hover:bg-red-500/30"
-          >
-            Install MetaMask
-          </a>
+          <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:justify-center">
+            <a
+              href={openInMetaMaskUrl}
+              className="inline-flex justify-center rounded-xl bg-emerald-600/90 px-4 py-3 text-sm font-semibold text-white shadow-[0_0_20px_rgba(0,255,163,0.2)] transition hover:bg-emerald-500"
+            >
+              Open in MetaMask
+            </a>
+            <a
+              href="https://metamask.io/download/"
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex justify-center rounded-xl bg-red-500/20 px-4 py-3 text-sm font-semibold text-red-100 underline-offset-2 hover:bg-red-500/30"
+            >
+              Install MetaMask
+            </a>
+          </div>
         </div>
       ) : null}
 
