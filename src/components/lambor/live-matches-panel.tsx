@@ -9,9 +9,17 @@ type LiveMatchesPanelProps = {
   loading: boolean;
   error: string | null;
   onBet?: (match: LiveMatch) => void;
+  /** Shown when there are no rows (e.g. filtered list). */
+  emptyMessage?: string;
 };
 
-export function LiveMatchesPanel({ matches, loading, error, onBet }: LiveMatchesPanelProps) {
+export function LiveMatchesPanel({
+  matches,
+  loading,
+  error,
+  onBet,
+  emptyMessage = "No live fixtures at the moment.",
+}: LiveMatchesPanelProps) {
   if (loading) {
     return (
       <div className="space-y-2.5">
@@ -27,7 +35,7 @@ export function LiveMatchesPanel({ matches, loading, error, onBet }: LiveMatches
   }
 
   if (matches.length === 0) {
-    return <p className="text-xs text-zinc-500">No live fixtures at the moment.</p>;
+    return <p className="text-xs text-zinc-500">{emptyMessage}</p>;
   }
 
   return (
@@ -61,13 +69,15 @@ export function LiveMatchesPanel({ matches, loading, error, onBet }: LiveMatches
                 >
                   {match.score}
                 </motion.span>
-                <button
-                  type="button"
-                  onClick={() => onBet?.(match)}
-                  className="rounded-lg border border-emerald-400/60 px-2.5 py-1.5 text-xs font-semibold text-emerald-300 transition hover:bg-emerald-500/10"
-                >
-                  Bet
-                </button>
+                {onBet ? (
+                  <button
+                    type="button"
+                    onClick={() => onBet(match)}
+                    className="rounded-lg border border-emerald-400/60 px-2.5 py-1.5 text-xs font-semibold text-emerald-300 transition hover:bg-emerald-500/10"
+                  >
+                    Bet
+                  </button>
+                ) : null}
               </div>
             </div>
           </motion.div>

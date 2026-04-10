@@ -42,7 +42,8 @@ function tagConfidence(confidence: number): EngineDecision["tag"] {
   return "LOW";
 }
 
-function riskFromConfidence(confidence: number): EngineDecision["riskLevel"] {
+/** Maps a 0–100 confidence score to LOW / MEDIUM / HIGH risk (used for aggregate and per-strategy rows). */
+export function riskLevelFromConfidence(confidence: number): EngineDecision["riskLevel"] {
   if (confidence >= 85) return "LOW";
   if (confidence >= 70) return "MEDIUM";
   return "HIGH";
@@ -81,7 +82,7 @@ export function evaluateMatch(
     confidence: Number(confidence.toFixed(1)),
     decision,
     tag: tagConfidence(confidence),
-    riskLevel: riskFromConfidence(confidence),
+    riskLevel: riskLevelFromConfidence(confidence),
     reasoning:
       decision === "BET"
         ? `${topStrategy?.strategy ?? "Top strategy"} aligned with current tempo; confidence cleared ${threshold}%.`

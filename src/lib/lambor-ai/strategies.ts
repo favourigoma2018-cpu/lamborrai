@@ -196,3 +196,6 @@ export const strategyEvaluators: Record<StrategyName, StrategyEvaluator> = {
   LATE_EQUALIZER: lateEqualizer,
   RED_CARD_EXPLOIT: redCardExploit,
 };
+
+/** Stable display order for listing every strategy in the UI. */
+export const STRATEGY_ORDER = Object.keys(strategyEvaluators) as StrategyName[];

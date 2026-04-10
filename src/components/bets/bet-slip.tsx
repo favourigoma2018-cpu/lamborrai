@@ -24,6 +24,7 @@ export type BetSlipSelection = SlipSelection & {
 type BetSlipProps = {
   selection: BetSlipSelection | null;
   onClear: () => void;
+  onPlaced?: () => void;
 };
 
 function resolveCoreAddress(): Address | null {
@@ -37,7 +38,7 @@ function resolveCoreAddress(): Address | null {
   return null;
 }
 
-export function BetSlip({ selection, onClear }: BetSlipProps) {
+export function BetSlip({ selection, onClear, onPlaced }: BetSlipProps) {
   const { address } = useAccount();
   const [amount, setAmount] = useState("");
   const [placedBets, setPlacedBets] = useState<PlacedBetRecord[]>([]);
@@ -110,6 +111,7 @@ export function BetSlip({ selection, onClear }: BetSlipProps) {
     };
     pushPlacedBet(baseRecord);
     setPlacedBets(readPlacedBets());
+    onPlaced?.();
 
     try {
       const signature = await signTypedDataAsync(prepared.typedData);
@@ -149,6 +151,7 @@ export function BetSlip({ selection, onClear }: BetSlipProps) {
       };
       pushPlacedBet(successRecord);
       setPlacedBets(readPlacedBets());
+      onPlaced?.();
       setTxState("success");
       setSuccessMessage("Bet order submitted successfully.");
     } catch (err) {
@@ -160,6 +163,7 @@ export function BetSlip({ selection, onClear }: BetSlipProps) {
       };
       pushPlacedBet(failedRecord);
       setPlacedBets(readPlacedBets());
+      onPlaced?.();
       setTxState("failed");
       setError(message);
     }

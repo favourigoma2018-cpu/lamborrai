@@ -1,5 +1,5 @@
 import { http, createConfig } from "wagmi";
-import { injected, walletConnect } from "wagmi/connectors";
+import { injected, metaMask, walletConnect } from "wagmi/connectors";
 
 import { targetChain } from "@/config/chain";
 
@@ -7,6 +7,7 @@ const walletConnectProjectId =
   process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID ?? "";
 
 const connectors = [
+  metaMask(),
   injected({ shimDisconnect: true }),
   ...(walletConnectProjectId
     ? [
