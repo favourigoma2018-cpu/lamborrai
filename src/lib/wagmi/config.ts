@@ -1,5 +1,6 @@
 import { http, createConfig } from "wagmi";
 import { injected, metaMask, walletConnect } from "wagmi/connectors";
+import { polygon } from "wagmi/chains";
 
 import { targetChain } from "@/config/chain";
 
@@ -19,10 +20,11 @@ const connectors = [
 ];
 
 export const wagmiConfig = createConfig({
-  chains: [targetChain],
+  chains: [targetChain, polygon],
   connectors,
   transports: {
     [targetChain.id]: http(),
+    [polygon.id]: http(),
   },
   ssr: true,
 });

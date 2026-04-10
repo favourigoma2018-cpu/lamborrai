@@ -5,22 +5,22 @@ import { BarChart3, Brain, CircleDollarSign, Cpu, Flame, Send, Wallet } from "lu
 import type { GameData } from "@azuro-org/toolkit";
 import type { ComponentType, ReactNode } from "react";
 import { useMemo, useState } from "react";
-import { useAccount, useBalance, useChainId } from "wagmi";
+import { useAccount } from "wagmi";
 
-import { BetSlip, type BetSlipSelection } from "@/components/bets/bet-slip";
+import type { BetSlipSelection } from "@/components/bets/bet-slip";
 import { BetPage } from "@/components/bets/bet-page";
 import { LiveMatchesPanel } from "@/components/lambor/live-matches-panel";
-import { WalletControls } from "@/components/wallet/wallet-controls";
-import { targetChain } from "@/config/chain";
+import { LamborWalletLayer } from "@/components/wallet/lambor-wallet-layer";
 import { useLiveMatches } from "@/hooks/use-live-matches";
 import type { ConditionsByGameId } from "@/lib/azuro/fetch-conditions";
 import { readPlacedBets } from "@/lib/bets/local-bets";
+import { executeCommand, parseCommand } from "@/lib/lambor-ai/chat-action-engine";
 import { processLamborStrategy } from "@/lib/lambor-ai/decision-engine";
-import { evaluateMatches, riskLevelFromConfidence } from "@/lib/lambor-ai/engine";
+import { evaluateMatchesDecisionFirst, riskLevelFromConfidence } from "@/lib/lambor-ai/engine";
 import { readLearningProfile, recordBetResult } from "@/lib/lambor-ai/learning";
 import { isLiveInPlayMatch } from "@/lib/lambor-ai/live-status";
 import { STRATEGY_ORDER } from "@/lib/lambor-ai/strategies";
-import type { EngineDecision, MatchAnalyticsInput, StrategyName, StrategyResult } from "@/lib/lambor-ai/types";
+import type { MatchAnalyticsInput, StrategyName, StrategyResult } from "@/lib/lambor-ai/types";
 import type { PlacedBetRecord } from "@/types/bets";
 import type { LiveMatch } from "@/types/live-matches";
 
@@ -196,6 +196,12 @@ function orderStrategyBreakdown(rows: StrategyResult[]): StrategyResult[] {
 function riskBadgeClass(level: "LOW" | "MEDIUM" | "HIGH") {
   if (level === "LOW") return "border-emerald-500/45 bg-emerald-500/10 text-emerald-300";
   if (level === "MEDIUM") return "border-amber-500/45 bg-amber-500/10 text-amber-200";
+  return "border-red-500/40 bg-red-500/10 text-red-300";
+}
+
+function decisionBadgeClass(color: "green" | "yellow" | "red") {
+  if (color === "green") return "border-emerald-500/40 bg-emerald-500/10 text-emerald-300";
+  if (color === "yellow") return "border-amber-500/45 bg-amber-500/10 text-amber-200";
   return "border-red-500/40 bg-red-500/10 text-red-300";
 }
 
@@ -513,50 +519,8 @@ function shortenAddress(address: string) {
 }
 
 function WallScreen() {
-  const { address, isConnected } = useAccount();
-  const chainId = useChainId();
-  const { data: balance } = useBalance({ address, chainId: targetChain.id, query: { enabled: Boolean(address) } });
-  const onAzuroChain = chainId === targetChain.id;
-
   return (
-    <div className="space-y-4">
-      <GlassCard className="text-center">
-        <p className="text-xs uppercase tracking-[0.18em] text-zinc-400">Wallet Balance ({targetChain.name})</p>
-        {isConnected && balance ? (
-          <p className="mt-2 text-3xl font-semibold text-emerald-300">
-            {Number(balance.formatted).toFixed(4)} {balance.symbol}
-          </p>
-        ) : (
-          <p className="mt-2 text-sm text-zinc-500">Connect a wallet below to see your balance</p>
-        )}
-        <div className="mt-4 flex justify-center">
-          <WalletControls />
-        </div>
-      </GlassCard>
-      <GlassCard>
-        <div className="flex items-center justify-between">
-          <p className="font-medium text-zinc-100">Primary wallet</p>
-          <div className="flex gap-2">
-            <span className={`rounded-md px-2 py-0.5 text-[10px] font-semibold ${onAzuroChain ? "border border-emerald-500/40 bg-emerald-500/10 text-emerald-300" : "border border-amber-500/50 bg-amber-500/10 text-amber-300"}`}>
-              {onAzuroChain ? "on-chain" : "wrong-chain"}
-            </span>
-            <span className="rounded-md border border-zinc-600 px-2 py-0.5 text-[10px] font-semibold text-zinc-300">
-              {isConnected ? "connected" : "disconnected"}
-            </span>
-          </div>
-        </div>
-        <p className="mt-1 text-xs text-zinc-500">{address ? shortenAddress(address) : "No wallet connected"}</p>
-        <p className="mt-3 text-lg font-semibold text-zinc-100">{targetChain.name} / chain {targetChain.id}</p>
-      </GlassCard>
-      <div className="grid grid-cols-2 gap-3">
-        <button className="rounded-xl border border-emerald-400/60 bg-emerald-500/10 py-2.5 text-sm font-semibold text-emerald-300 transition hover:bg-emerald-500/20 disabled:opacity-40" disabled>
-          Deposit (Azuro flow)
-        </button>
-        <button className="rounded-xl border border-zinc-600 py-2.5 text-sm font-semibold text-zinc-200 transition hover:bg-zinc-800/70 disabled:opacity-40" disabled>
-          Withdraw (Azuro flow)
-        </button>
-      </div>
-    </div>
+    <LamborWalletLayer />
   );
 }
 
@@ -568,6 +532,7 @@ type MindScreenProps = {
   liveError: string | null;
   placedBets: PlacedBetRecord[];
   onRefreshPlacedBets: () => void;
+  onOpenBetTab: () => void;
 };
 
 function MindScreen({
@@ -578,6 +543,7 @@ function MindScreen({
   liveError,
   placedBets,
   onRefreshPlacedBets,
+  onOpenBetTab,
 }: MindScreenProps) {
   const feed = useMemo(() => {
     return games.slice(0, 3).map((game) => {
@@ -600,16 +566,29 @@ function MindScreen({
   }, [conditionsByGameId, games]);
   const [learningRefresh, setLearningRefresh] = useState(0);
   const liveInPlayMatches = useMemo(() => liveMatches.filter(isLiveInPlayMatch), [liveMatches]);
-  const engineDecisions = useMemo(() => {
+  const decisionCards = useMemo(() => {
     const refreshToken = learningRefresh;
     void refreshToken;
     if (liveInPlayMatches.length === 0) return [];
     const profile = readLearningProfile();
     const inputs = liveInPlayMatches.map(toAnalyticsInput);
-    return evaluateMatches(inputs, profile);
+    return evaluateMatchesDecisionFirst(inputs, profile);
   }, [liveInPlayMatches, learningRefresh]);
+  const showRejected = false;
+  const visibleDecisionCards = useMemo(
+    () =>
+      showRejected
+        ? decisionCards
+        : decisionCards.filter((card) => card.confidence >= 65 && card.decision !== "NO BET"),
+    [decisionCards, showRejected],
+  );
 
-  function onRecordResult(decision: EngineDecision, result: "win" | "loss") {
+  const [expandedDetails, setExpandedDetails] = useState<Record<string, boolean>>({});
+
+  function onRecordResult(
+    decision: (typeof decisionCards)[number]["raw"],
+    result: "win" | "loss",
+  ) {
     const odds = result === "win" ? 1.7 : 1.4;
     recordBetResult({
       match: decision.match,
@@ -635,6 +614,9 @@ function MindScreen({
   ]);
   const [chatDraft, setChatDraft] = useState("");
   const [showBetMomentum, setShowBetMomentum] = useState(false);
+  const [pendingCommand, setPendingCommand] = useState<ReturnType<typeof parseCommand> | null>(null);
+  const [executing, setExecuting] = useState(false);
+  const { address: connectedAddress } = useAccount();
 
   const betMomentumMatches = useMemo(
     () => filterLiveMatchesForBetGames(liveMatches, placedBets),
@@ -645,18 +627,73 @@ function MindScreen({
     [placedBets],
   );
 
-  function sendMindChat() {
-    const text = chatDraft.trim();
+  async function runPendingCommand(command: ReturnType<typeof parseCommand>) {
+    setExecuting(true);
+    setChatMessages((prev) => [...prev, { role: "assistant", text: "⏳ Executing..." }]);
+    try {
+      const withdrawAddress =
+        typeof window === "undefined"
+          ? ""
+          : (window.localStorage.getItem("lambor.wallet.withdrawAddress.v1") ?? "");
+      const result = await executeCommand(command, {
+        activeWalletAddress: connectedAddress ?? null,
+        withdrawAddress,
+        liveMatches,
+        onOpenBetTab,
+        getStatusSummary: () =>
+          visibleDecisionCards.length === 0
+            ? "No high-quality bets available right now."
+            : `${visibleDecisionCards.length} actionable opportunities are live.`,
+      });
+      setChatMessages((prev) => [...prev, { role: "assistant", text: result.message }]);
+    } catch {
+      setChatMessages((prev) => [...prev, { role: "assistant", text: "❌ Command execution failed." }]);
+    } finally {
+      setExecuting(false);
+      setPendingCommand(null);
+    }
+  }
+
+  async function sendMindChat() {
+    const text = chatDraft.trim().replace(/\s+/g, " ");
     if (!text) return;
     setChatDraft("");
-    setChatMessages((prev) => [
-      ...prev,
-      { role: "user", text },
-      {
-        role: "assistant",
-        text: "LAMBOR Mind received your message. Full conversational AI is rolling out next — use the strategy engine above for live signals today.",
-      },
-    ]);
+    setChatMessages((prev) => [...prev, { role: "user", text }]);
+
+    if (pendingCommand && /^yes$/i.test(text)) {
+      await runPendingCommand(pendingCommand);
+      return;
+    }
+    if (pendingCommand && /^(no|cancel)$/i.test(text)) {
+      setPendingCommand(null);
+      setChatMessages((prev) => [...prev, { role: "assistant", text: "Cancelled. No action executed." }]);
+      return;
+    }
+
+    const command = parseCommand(text);
+    if (command.intent === "unknown") {
+      setChatMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          text: "❌ I couldn't parse that command. Try: Place bet Arsenal +0.5, Hedge 30% Arsenal +0.5, Withdraw 10, Deposit 20, Status.",
+        },
+      ]);
+      return;
+    }
+
+    setPendingCommand(command);
+    const confirmationText =
+      command.intent === "hedge"
+        ? `Confirm hedge ${command.percentage ?? "-"}% ${command.market ?? ""}?`
+        : command.intent === "place_bet"
+          ? `Confirm bet execution for ${command.market ?? "selected market"}?`
+          : command.intent === "withdraw"
+            ? `Confirm withdraw ${command.amount ?? "-"}?`
+            : command.intent === "deposit"
+              ? `Confirm deposit ${command.amount ?? "-"}?`
+              : "Run status check now?";
+    setChatMessages((prev) => [...prev, { role: "assistant", text: `${confirmationText} Reply \"yes\" or \"no\".` }]);
   }
 
   return (
@@ -722,87 +759,96 @@ function MindScreen({
       <GlassCard>
         <p className="mb-1 text-xs uppercase tracking-[0.18em] text-zinc-400">LAMBOR Strategy Engine</p>
         <p className="mb-3 text-[11px] leading-snug text-zinc-500">
-          In-play fixtures only. Every strategy is scored with its own risk level; aggregate signal uses the weighted blend.
+          Decision-first mode: each match returns one action based on filtered strategies and risk-weighted confidence.
         </p>
         <div className="space-y-2.5">
-          {engineDecisions.length === 0 ? (
-            <p className="text-xs text-zinc-500">
-              {liveMatches.length === 0
-                ? "No fixtures from the live feed."
-                : "No in-play fixtures right now (finished or not started are excluded)."}
-            </p>
+          {visibleDecisionCards.length === 0 ? (
+            <div className="rounded-xl border border-zinc-700 bg-zinc-900/70 p-3">
+              <p className="text-sm font-semibold text-zinc-200">No high-quality bets available</p>
+              <p className="mt-1 text-xs text-zinc-500">
+                Lambor is scanning for strong opportunities. Check back shortly.
+              </p>
+            </div>
           ) : (
-            engineDecisions.map((decision) => (
-              <div key={decision.match} className="rounded-xl border border-zinc-700 bg-zinc-900/70 p-3">
+            visibleDecisionCards.map((card) => (
+              <div key={card.match} className="rounded-xl border border-zinc-700 bg-zinc-900/70 p-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <p className="text-xs font-semibold text-zinc-100">{decision.match}</p>
+                  <p className="text-xs font-semibold text-zinc-100">{card.match}</p>
                   <div className="flex flex-wrap items-center gap-1.5">
-                    <span
-                      className={`rounded border px-2 py-0.5 text-[10px] font-semibold ${
-                        decision.decision === "BET"
-                          ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
-                          : "border-zinc-600 bg-zinc-800/80 text-zinc-400"
-                      }`}
-                    >
-                      {decision.decision === "BET" ? "BET" : "NO BET"}
-                    </span>
-                    <span className={`rounded border px-2 py-0.5 text-[10px] font-semibold ${riskBadgeClass(decision.riskLevel)}`}>
-                      Risk {decision.riskLevel}
+                    <span className={`rounded border px-2 py-0.5 text-[10px] font-semibold ${decisionBadgeClass(card.color)}`}>
+                      {card.decision}
                     </span>
                     <span className="rounded border border-zinc-600 px-2 py-0.5 text-[10px] font-semibold text-zinc-300">
-                      {decision.confidence}% blend
+                      {card.confidence}%
                     </span>
                   </div>
                 </div>
                 <p className="mt-1 text-[11px] text-zinc-500">
-                  Top signal: <span className="text-zinc-300">{formatStrategyLabel(decision.strategyUsed)}</span> ·{" "}
-                  {decision.tag}
+                  Top strategies:{" "}
+                  <span className="text-zinc-300">{card.topStrategies.length > 0 ? card.topStrategies.join(", ") : "None"}</span>
                 </p>
-                <p className="mt-1 text-[11px] text-zinc-500">{decision.reasoning}</p>
+                <p className="mt-1 text-[11px] text-zinc-500">{card.reason}</p>
 
-                <div className="mt-3 overflow-x-auto rounded-lg border border-zinc-700/80 bg-zinc-950/50">
-                  <table className="w-full min-w-[280px] border-collapse text-left text-[10px]">
-                    <thead>
-                      <tr className="border-b border-zinc-700/80 text-zinc-500">
-                        <th className="px-2 py-1.5 font-medium">Strategy</th>
-                        <th className="px-2 py-1.5 font-medium">Conf.</th>
-                        <th className="px-2 py-1.5 font-medium">Risk</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {orderStrategyBreakdown(decision.strategyBreakdown).map((row) => {
-                        const level = riskLevelFromConfidence(row.confidence);
-                        return (
-                          <tr key={row.strategy} className="border-b border-zinc-800/80 last:border-0">
-                            <td className="px-2 py-1.5 align-top text-zinc-300">{formatStrategyLabel(row.strategy)}</td>
-                            <td className="px-2 py-1.5 text-zinc-400">{row.confidence.toFixed(1)}%</td>
-                            <td className="px-2 py-1.5">
-                              <span className={`inline-block rounded border px-1.5 py-0.5 font-semibold ${riskBadgeClass(level)}`}>
-                                {level}
-                              </span>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
+                <div className="mt-2">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setExpandedDetails((prev) => ({
+                        ...prev,
+                        [card.match]: !prev[card.match],
+                      }))
+                    }
+                    className="rounded-md border border-zinc-600 px-2 py-1 text-[10px] font-semibold text-zinc-300 transition hover:bg-zinc-800/70"
+                  >
+                    {expandedDetails[card.match] ? "Hide Details" : "View Details"}
+                  </button>
                 </div>
+
+                {expandedDetails[card.match] ? (
+                  <div className="mt-3 overflow-x-auto rounded-lg border border-zinc-700/80 bg-zinc-950/50">
+                    <table className="w-full min-w-[280px] border-collapse text-left text-[10px]">
+                      <thead>
+                        <tr className="border-b border-zinc-700/80 text-zinc-500">
+                          <th className="px-2 py-1.5 font-medium">Strategy</th>
+                          <th className="px-2 py-1.5 font-medium">Conf.</th>
+                          <th className="px-2 py-1.5 font-medium">Risk</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {orderStrategyBreakdown(card.raw.strategyBreakdown).map((row) => {
+                          const level = riskLevelFromConfidence(row.confidence);
+                          return (
+                            <tr key={row.strategy} className="border-b border-zinc-800/80 last:border-0">
+                              <td className="px-2 py-1.5 align-top text-zinc-300">{formatStrategyLabel(row.strategy)}</td>
+                              <td className="px-2 py-1.5 text-zinc-400">{row.confidence.toFixed(1)}%</td>
+                              <td className="px-2 py-1.5">
+                                <span className={`inline-block rounded border px-1.5 py-0.5 font-semibold ${riskBadgeClass(level)}`}>
+                                  {level}
+                                </span>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : null}
 
                 <div className="mt-2 flex gap-2">
                   <button
                     type="button"
-                    disabled={decision.decision !== "BET"}
-                    title={decision.decision !== "BET" ? "Learning only recorded for BET signals" : undefined}
-                    onClick={() => onRecordResult(decision, "win")}
+                    disabled={card.decision !== "BET"}
+                    title={card.decision !== "BET" ? "Learning only recorded for BET signals" : undefined}
+                    onClick={() => onRecordResult(card.raw, "win")}
                     className="rounded-md border border-emerald-500/50 px-2 py-1 text-[10px] font-semibold text-emerald-300 disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     Mark Win
                   </button>
                   <button
                     type="button"
-                    disabled={decision.decision !== "BET"}
-                    title={decision.decision !== "BET" ? "Learning only recorded for BET signals" : undefined}
-                    onClick={() => onRecordResult(decision, "loss")}
+                    disabled={card.decision !== "BET"}
+                    title={card.decision !== "BET" ? "Learning only recorded for BET signals" : undefined}
+                    onClick={() => onRecordResult(card.raw, "loss")}
                     className="rounded-md border border-red-500/50 px-2 py-1 text-[10px] font-semibold text-red-300 disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     Mark Loss
@@ -834,13 +880,14 @@ function MindScreen({
           className="mt-3 flex gap-2"
           onSubmit={(event) => {
             event.preventDefault();
-            sendMindChat();
+            void sendMindChat();
           }}
         >
-          <input
+          <textarea
             value={chatDraft}
             onChange={(event) => setChatDraft(event.target.value)}
-            className="h-11 min-w-0 flex-1 rounded-xl border border-zinc-700 bg-zinc-900/70 px-3 text-sm text-zinc-100 outline-none transition focus:border-emerald-400 focus:shadow-[0_0_20px_rgba(0,255,163,0.25)]"
+            rows={1}
+            className="min-h-11 max-h-36 min-w-0 flex-1 resize-y rounded-xl border border-zinc-700 bg-zinc-900/70 px-3 py-2 text-sm text-zinc-100 outline-none transition focus:border-emerald-400 focus:shadow-[0_0_20px_rgba(0,255,163,0.25)]"
             placeholder="Ask LAMBOR Mind..."
             enterKeyHint="send"
             autoComplete="off"
@@ -848,13 +895,36 @@ function MindScreen({
           />
           <button
             type="submit"
-            disabled={!chatDraft.trim()}
+            disabled={!chatDraft.trim() || executing}
             className="flex h-11 shrink-0 items-center justify-center rounded-xl border border-emerald-500/50 bg-emerald-500/15 px-4 text-emerald-300 transition hover:bg-emerald-500/25 disabled:cursor-not-allowed disabled:opacity-40"
             aria-label="Send message"
           >
             <Send className="h-4 w-4" />
           </button>
         </form>
+        {pendingCommand ? (
+          <div className="mt-2 flex gap-2">
+            <button
+              type="button"
+              onClick={() => void runPendingCommand(pendingCommand)}
+              disabled={executing}
+              className="rounded-md border border-emerald-500/50 px-2.5 py-1 text-[11px] font-semibold text-emerald-300 disabled:opacity-40"
+            >
+              Confirm
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setPendingCommand(null);
+                setChatMessages((prev) => [...prev, { role: "assistant", text: "Cancelled. No action executed." }]);
+              }}
+              disabled={executing}
+              className="rounded-md border border-zinc-600 px-2.5 py-1 text-[11px] font-semibold text-zinc-300 disabled:opacity-40"
+            >
+              Cancel
+            </button>
+          </div>
+        ) : null}
       </GlassCard>
     </div>
   );
@@ -938,6 +1008,7 @@ export function LamborDashboard({ games, conditionsByGameId, total }: LamborDash
               liveError={liveError}
               placedBets={placedBets}
               onRefreshPlacedBets={() => setPlacedBets(readPlacedBets())}
+              onOpenBetTab={() => setActiveTab("bet")}
             />
           )}
         </motion.section>

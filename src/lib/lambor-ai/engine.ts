@@ -96,3 +96,85 @@ export function evaluateMatch(
 export function evaluateMatches(matches: MatchAnalyticsInput[], profileArg?: LearningProfile) {
   return matches.map((match) => evaluateMatch(match, profileArg));
 }
+
+export type DecisionFirstEngineDecision = {
+  match: string;
+  decision: "BET" | "CAUTION" | "NO BET";
+  confidence: number;
+  topStrategies: string[];
+  reason: string;
+  color: "green" | "yellow" | "red";
+  raw: EngineDecision;
+};
+
+function riskWeight(level: EngineDecision["riskLevel"]) {
+  if (level === "LOW") return 1.0;
+  if (level === "MEDIUM") return 0.7;
+  return 0.4;
+}
+
+function toDecisionFirstDecision(raw: EngineDecision): DecisionFirstEngineDecision {
+  // 1) Filter strategies by confidence >= 65.
+  const filtered = raw.strategyBreakdown.filter((row) => row.confidence >= 65);
+  const scoredRows = filtered.map((row) => {
+    const level = riskLevelFromConfidence(row.confidence);
+    const effectiveWeight = riskWeight(level) * (row.weight > 0 ? row.weight : 1);
+    return {
+      strategy: row.strategy,
+      confidence: row.confidence,
+      level,
+      effectiveWeight,
+    };
+  });
+
+  // 2/3) Risk weighting + weighted average score.
+  const denominator = scoredRows.reduce((sum, row) => sum + row.effectiveWeight, 0);
+  const weightedScore =
+    denominator > 0
+      ? scoredRows.reduce((sum, row) => sum + row.confidence * row.effectiveWeight, 0) / denominator
+      : raw.confidence;
+  const confidence = Number(clamp(weightedScore).toFixed(1));
+
+  // 4) Decision rules.
+  const hasLowRisk = scoredRows.some((row) => row.level === "LOW");
+  let decision: DecisionFirstEngineDecision["decision"] = "NO BET";
+  let color: DecisionFirstEngineDecision["color"] = "red";
+  if (confidence >= 80 && hasLowRisk) {
+    decision = "BET";
+    color = "green";
+  } else if (confidence >= 65) {
+    decision = "CAUTION";
+    color = "yellow";
+  }
+
+  const strongest = [...scoredRows]
+    .sort((a, b) => b.confidence * b.effectiveWeight - a.confidence * a.effectiveWeight)
+    .slice(0, 2)
+    .map((row) => row.strategy.replace(/_/g, " "));
+
+  const reason =
+    decision === "BET"
+      ? `${strongest.join(", ")} lead with weighted support and at least one low-risk setup.`
+      : decision === "CAUTION"
+        ? `${strongest.join(", ")} show partial alignment; edge exists but risk is elevated.`
+        : filtered.length === 0
+          ? "No strategy cleared the 65% confidence filter."
+          : "Weighted confidence remains below actionable threshold.";
+
+  return {
+    match: raw.match,
+    decision,
+    confidence,
+    topStrategies: strongest,
+    reason,
+    color,
+    raw,
+  };
+}
+
+export function evaluateMatchesDecisionFirst(
+  matches: MatchAnalyticsInput[],
+  profileArg?: LearningProfile,
+): DecisionFirstEngineDecision[] {
+  return evaluateMatches(matches, profileArg).map(toDecisionFirstDecision);
+}
