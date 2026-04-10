@@ -16,7 +16,7 @@ import { StrategyPackagesPanel } from "@/components/lambor/strategy-packages-pan
 import { LamborWalletLayer } from "@/components/wallet/lambor-wallet-layer";
 import { useLiveMatches } from "@/hooks/use-live-matches";
 import type { ConditionsByGameId } from "@/lib/azuro/fetch-conditions";
-import { useAzuroBets } from "@/hooks/use-azuro-bets";
+import { useAzuroBets, useInvalidateAzuroBets } from "@/hooks/use-azuro-bets";
 import { azuroBetPnl, formatAzuroBetTitle, isAzuroBetOpen } from "@/lib/azuro/bet-helpers";
 import { pickSelectionFromLiveMatch } from "@/lib/lambor/pick-selection-from-live";
 import { executeCommand, parseCommand } from "@/lib/lambor-ai/chat-action-engine";
@@ -501,6 +501,7 @@ function MindScreen({
   const [pendingCommand, setPendingCommand] = useState<ReturnType<typeof parseCommand> | null>(null);
   const [executing, setExecuting] = useState(false);
   const { address: connectedAddress } = useAccount();
+  const invalidateAzuroBets = useInvalidateAzuroBets();
 
   const betMomentumMatches = useMemo(
     () => filterLiveMatchesForBetGames(liveMatches, azuroOrders),
@@ -606,7 +607,7 @@ function MindScreen({
           <button
             type="button"
             onClick={() => {
-              onRefreshPlacedBets();
+              void invalidateAzuroBets();
               setShowBetMomentum(true);
             }}
             className="w-full rounded-xl border border-emerald-500/45 bg-emerald-500/10 py-2.5 text-sm font-semibold text-emerald-300 transition hover:bg-emerald-500/20"
