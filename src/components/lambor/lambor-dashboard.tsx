@@ -1,15 +1,15 @@
 "use client";
 
 import { AnimatePresence, motion } from "framer-motion";
-import { BarChart3, Brain, CircleDollarSign, Cpu, Flame, Send, Wallet } from "lucide-react";
+import { BarChart3, Brain, CircleDollarSign, Cpu, Flame, Wallet } from "lucide-react";
 import type { BetOrderData, GameData } from "@azuro-org/toolkit";
 import { BetOrderResult, BetOrderState } from "@azuro-org/toolkit";
 import type { ComponentType, ReactNode } from "react";
 import { useMemo, useState } from "react";
-import { useAccount } from "wagmi";
 
 import type { BetSlipSelection } from "@/components/bets/bet-slip";
 import { BetPage } from "@/components/bets/bet-page";
+import { LamborMindChat } from "@/components/lambor/LamborMindChat";
 import { LiveMatchesPanel } from "@/components/lambor/live-matches-panel";
 import { StrategyInsightsStrip } from "@/components/lambor/strategy-insights";
 import { StrategyPackagesPanel } from "@/components/lambor/strategy-packages-panel";
@@ -19,16 +19,7 @@ import type { ConditionsByGameId } from "@/lib/azuro/fetch-conditions";
 import { useAzuroBets, useInvalidateAzuroBets } from "@/hooks/use-azuro-bets";
 import { azuroBetPnl, formatAzuroBetTitle, isAzuroBetOpen } from "@/lib/azuro/bet-helpers";
 import { pickSelectionFromLiveMatch } from "@/lib/lambor/pick-selection-from-live";
-import { executeCommand, parseCommand } from "@/lib/lambor-ai/chat-action-engine";
 import { processLamborStrategy } from "@/lib/lambor-ai/decision-engine";
-import { evaluateMatchesDecisionFirst, riskLevelFromConfidence } from "@/lib/lambor-ai/engine";
-import { readBetResults, readLearningProfile, recordBetResult } from "@/lib/lambor-ai/learning";
-import { buildContext } from "@/lib/lambor-ai/mind-context";
-import { generateMindResponse, type MindResponseMetadata } from "@/lib/lambor-ai/mind-response";
-import { isLiveInPlayMatch } from "@/lib/lambor-ai/live-status";
-import { STRATEGY_ORDER } from "@/lib/lambor-ai/strategies";
-import { liveMatchToAnalyticsInput } from "@/lib/lambor/live-match-analytics";
-import type { StrategyName, StrategyResult } from "@/lib/lambor-ai/types";
 import type { LiveMatch } from "@/types/live-matches";
 
 type TabKey = "dash" | "bet" | "wall" | "mind";
@@ -72,38 +63,6 @@ function formatStartTime(startsAt: string) {
   const sec = Number.parseInt(startsAt, 10);
   if (Number.isNaN(sec)) return startsAt;
   return new Date(sec * 1000).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" });
-}
-
-function filterLiveMatchesForBetGames(matches: LiveMatch[], orders: BetOrderData[]): LiveMatch[] {
-  const gameIds = new Set<string>();
-  for (const o of orders) {
-    for (const c of o.conditions) {
-      gameIds.add(String(c.gameId));
-    }
-  }
-  if (gameIds.size === 0) return [];
-  return matches.filter((m) => gameIds.has(String(m.id)));
-}
-
-function formatStrategyLabel(name: StrategyName) {
-  return name.replace(/_/g, " ");
-}
-
-function orderStrategyBreakdown(rows: StrategyResult[]): StrategyResult[] {
-  const order = new Map(STRATEGY_ORDER.map((n, i) => [n, i]));
-  return [...rows].sort((a, b) => (order.get(a.strategy) ?? 999) - (order.get(b.strategy) ?? 999));
-}
-
-function riskBadgeClass(level: "LOW" | "MEDIUM" | "HIGH") {
-  if (level === "LOW") return "border-emerald-500/45 bg-emerald-500/10 text-emerald-300";
-  if (level === "MEDIUM") return "border-amber-500/45 bg-amber-500/10 text-amber-200";
-  return "border-red-500/40 bg-red-500/10 text-red-300";
-}
-
-function decisionBadgeClass(color: "green" | "yellow" | "red") {
-  if (color === "green") return "border-emerald-500/40 bg-emerald-500/10 text-emerald-300";
-  if (color === "yellow") return "border-amber-500/45 bg-amber-500/10 text-amber-200";
-  return "border-red-500/40 bg-red-500/10 text-red-300";
 }
 
 function splitTeamsFromTitle(title: string): { home: string; away: string } {
@@ -412,499 +371,16 @@ function WallScreen() {
   );
 }
 
-type MindScreenProps = {
-  games: GameData[];
-  conditionsByGameId: ConditionsByGameId;
+function MindScreen(props: {
   liveMatches: LiveMatch[];
   liveLoading: boolean;
   liveError: string | null;
+  lastUpdated: number | null;
+  refetchLiveMatches: () => Promise<void>;
   azuroOrders: BetOrderData[];
   onOpenBetTab: () => void;
-};
-
-type MindChatRow =
-  | { role: "user"; text: string; ts?: string }
-  | {
-      role: "assistant";
-      text: string;
-      timestamp?: string;
-      metadata?: MindResponseMetadata;
-      highlight?: string;
-    };
-
-const LAMBOR_MIND_WELCOME: MindChatRow = {
-  role: "assistant",
-  text: "Lambor Mind uses your logged results, on-chain legs, and the live strategy strip. Ask for performance, patterns, loss analysis, or whether to take a named fixture. Transactional commands (Place bet, Status, Deposit, …) still use confirm / yes.",
-  metadata: { mode: "general" },
-};
-
-function MindScreen({
-  games,
-  conditionsByGameId,
-  liveMatches,
-  liveLoading,
-  liveError,
-  azuroOrders,
-  onOpenBetTab,
-}: MindScreenProps) {
-  const feed = useMemo(() => {
-    return games.slice(0, 3).map((game) => {
-      const condition = (conditionsByGameId[game.gameId] ?? [])[0];
-      const outcome = condition?.outcomes?.[0];
-      const odds = Number.parseFloat(outcome?.odds ?? "0");
-      const confidence = Number.isFinite(odds) && odds > 0 ? Math.round(Math.min(92, Math.max(38, (1 / odds) * 100))) : 50;
-      const decision = confidence >= 58 ? "BET" : "NO BET";
-      const tag = confidence >= 75 ? "HIGH CONFIDENCE" : confidence >= 58 ? "RISKY" : "REJECTED";
-      return {
-        match: game.title,
-        confidence,
-        decision,
-        tag,
-        reasoning: condition
-          ? `Azuro market "${condition.title ?? condition.conditionId}" shows top outcome at ${outcome?.odds ?? "-"} odds.`
-          : "No condition market published yet for this event.",
-      };
-    });
-  }, [conditionsByGameId, games]);
-  const [learningRefresh, setLearningRefresh] = useState(0);
-  const liveInPlayMatches = useMemo(() => liveMatches.filter(isLiveInPlayMatch), [liveMatches]);
-  const decisionCards = useMemo(() => {
-    const refreshToken = learningRefresh;
-    void refreshToken;
-    if (liveInPlayMatches.length === 0) return [];
-    const profile = readLearningProfile();
-    const inputs = liveInPlayMatches.map(liveMatchToAnalyticsInput);
-    return evaluateMatchesDecisionFirst(inputs, profile);
-  }, [liveInPlayMatches, learningRefresh]);
-  const showRejected = false;
-  const visibleDecisionCards = useMemo(
-    () =>
-      showRejected
-        ? decisionCards
-        : decisionCards.filter((card) => card.confidence >= 65 && card.decision !== "NO BET"),
-    [decisionCards, showRejected],
-  );
-
-  const [expandedDetails, setExpandedDetails] = useState<Record<string, boolean>>({});
-
-  function onRecordResult(
-    decision: (typeof decisionCards)[number]["raw"],
-    result: "win" | "loss",
-  ) {
-    const odds = result === "win" ? 1.7 : 1.4;
-    recordBetResult({
-      match: decision.match,
-      strategy: decision.strategyUsed,
-      confidence: decision.confidence,
-      result,
-      odds,
-      league: "Live",
-      minute: null,
-      placedAt: new Date().toISOString(),
-    });
-    setLearningRefresh((value) => value + 1);
-  }
-
-  const [chatMessages, setChatMessages] = useState<MindChatRow[]>(() => [{ ...LAMBOR_MIND_WELCOME }]);
-  const [chatDraft, setChatDraft] = useState("");
-  const [showBetMomentum, setShowBetMomentum] = useState(false);
-  const [pendingCommand, setPendingCommand] = useState<ReturnType<typeof parseCommand> | null>(null);
-  const [executing, setExecuting] = useState(false);
-  const [mindThinking, setMindThinking] = useState(false);
-  const { address: connectedAddress } = useAccount();
-  const invalidateAzuroBets = useInvalidateAzuroBets();
-
-  const betMomentumMatches = useMemo(
-    () => filterLiveMatchesForBetGames(liveMatches, azuroOrders),
-    [liveMatches, azuroOrders],
-  );
-  const hasBetGamesForMomentum = useMemo(
-    () => azuroOrders.some((o) => o.conditions.length > 0),
-    [azuroOrders],
-  );
-
-  async function runPendingCommand(command: ReturnType<typeof parseCommand>) {
-    setExecuting(true);
-    const ts = new Date().toISOString();
-    setChatMessages((prev) => [...prev, { role: "assistant", text: "Processing transaction…", timestamp: ts }]);
-    try {
-      const withdrawAddress =
-        typeof window === "undefined"
-          ? ""
-          : (window.localStorage.getItem("lambor.wallet.withdrawAddress.v1") ?? "");
-      const result = await executeCommand(command, {
-        activeWalletAddress: connectedAddress ?? null,
-        withdrawAddress,
-        liveMatches,
-        onOpenBetTab,
-        getStatusSummary: () =>
-          visibleDecisionCards.length === 0
-            ? "No high-quality bets available right now."
-            : `${visibleDecisionCards.length} actionable opportunities are live.`,
-      });
-      setChatMessages((prev) => [
-        ...prev,
-        { role: "assistant", text: result.message, timestamp: new Date().toISOString() },
-      ]);
-    } catch {
-      setChatMessages((prev) => [
-        ...prev,
-        { role: "assistant", text: "Command execution failed.", timestamp: new Date().toISOString() },
-      ]);
-    } finally {
-      setExecuting(false);
-      setPendingCommand(null);
-    }
-  }
-
-  async function sendMindChat() {
-    const text = chatDraft.trim().replace(/\s+/g, " ");
-    if (!text) return;
-    setChatDraft("");
-    setChatMessages((prev) => [...prev, { role: "user", text, ts: new Date().toISOString() }]);
-
-    if (pendingCommand && /^yes$/i.test(text)) {
-      await runPendingCommand(pendingCommand);
-      return;
-    }
-    if (pendingCommand && /^(no|cancel)$/i.test(text)) {
-      setPendingCommand(null);
-      setChatMessages((prev) => [
-        ...prev,
-        { role: "assistant", text: "Cancelled. No action executed.", timestamp: new Date().toISOString() },
-      ]);
-      return;
-    }
-
-    const command = parseCommand(text);
-    if (command.intent === "unknown") {
-      setMindThinking(true);
-      queueMicrotask(() => {
-        const ctx = buildContext({
-          azuroOrders,
-          betResults: readBetResults(),
-          profile: readLearningProfile(),
-          decisionCards,
-          liveMatches,
-        });
-        const payload = generateMindResponse(text, ctx, decisionCards);
-        setMindThinking(false);
-        setChatMessages((prev) => [
-          ...prev,
-          {
-            role: "assistant",
-            text: payload.text,
-            timestamp: payload.timestamp,
-            metadata: payload.metadata,
-            highlight: payload.highlight,
-          },
-        ]);
-      });
-      return;
-    }
-
-    setPendingCommand(command);
-    const confirmationText =
-      command.intent === "hedge"
-        ? `Confirm hedge ${command.percentage ?? "-"}% ${command.market ?? ""}?`
-        : command.intent === "place_bet"
-          ? `Confirm bet execution for ${command.market ?? "selected market"}?`
-          : command.intent === "withdraw"
-            ? `Confirm withdraw ${command.amount ?? "-"}?`
-            : command.intent === "deposit"
-              ? `Confirm deposit ${command.amount ?? "-"}?`
-              : "Run status check now?";
-    setChatMessages((prev) => [
-      ...prev,
-      {
-        role: "assistant",
-        text: `${confirmationText} Reply \"yes\" or \"no\".`,
-        timestamp: new Date().toISOString(),
-      },
-    ]);
-  }
-
-  return (
-    <div className="space-y-4">
-      <div className="space-y-3">
-        {feed.map((item) => (
-          <GlassCard key={item.match}>
-            <div className="mb-2 flex items-center justify-between">
-              <p className="text-sm font-semibold text-zinc-100">{item.match}</p>
-              <span className="rounded-md border border-zinc-600 px-2 py-0.5 text-[10px] font-semibold text-zinc-300">{item.tag}</span>
-            </div>
-            <p className={`text-xs font-semibold ${item.decision === "BET" ? "text-emerald-300" : "text-zinc-300"}`}>
-              {item.decision} • {item.confidence}% confidence
-            </p>
-            <p className="mt-1 text-xs text-zinc-400">{item.reasoning}</p>
-          </GlassCard>
-        ))}
-      </div>
-
-      <GlassCard>
-        <p className="mb-1 text-xs uppercase tracking-[0.18em] text-zinc-400">Live Momentum (your bets)</p>
-        <p className="mb-3 text-[11px] leading-snug text-zinc-500">
-          Match info only for games you&apos;ve bet on. Nothing loads until you ask.
-        </p>
-        {!showBetMomentum ? (
-          <button
-            type="button"
-            onClick={() => {
-              void invalidateAzuroBets();
-              setShowBetMomentum(true);
-            }}
-            className="w-full rounded-xl border border-emerald-500/45 bg-emerald-500/10 py-2.5 text-sm font-semibold text-emerald-300 transition hover:bg-emerald-500/20"
-          >
-            Show momentum for my bet games
-          </button>
-        ) : (
-          <div className="space-y-3">
-            <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={() => setShowBetMomentum(false)}
-                className="flex-1 rounded-xl border border-zinc-600 py-2 text-sm font-medium text-zinc-300 transition hover:bg-zinc-800/70"
-              >
-                Hide
-              </button>
-            </div>
-            {!hasBetGamesForMomentum ? (
-              <p className="text-xs text-zinc-500">
-                No saved bets yet. Place a bet on the Bet tab first — then you can load momentum for those fixtures here.
-              </p>
-            ) : (
-              <LiveMatchesPanel
-                matches={betMomentumMatches}
-                loading={liveLoading}
-                error={liveError}
-                emptyMessage="No live fixtures in the feed match your bet games right now."
-              />
-            )}
-          </div>
-        )}
-      </GlassCard>
-
-      <GlassCard>
-        <p className="mb-1 text-xs uppercase tracking-[0.18em] text-zinc-400">LAMBOR Strategy Engine</p>
-        <p className="mb-3 text-[11px] leading-snug text-zinc-500">
-          Decision-first mode: each match returns one action based on filtered strategies and risk-weighted confidence.
-        </p>
-        <div className="space-y-2.5">
-          {visibleDecisionCards.length === 0 ? (
-            <div className="rounded-xl border border-zinc-700 bg-zinc-900/70 p-3">
-              <p className="text-sm font-semibold text-zinc-200">No high-quality bets available</p>
-              <p className="mt-1 text-xs text-zinc-500">
-                Lambor is scanning for strong opportunities. Check back shortly.
-              </p>
-            </div>
-          ) : (
-            visibleDecisionCards.map((card) => (
-              <div key={card.match} className="rounded-xl border border-zinc-700 bg-zinc-900/70 p-3">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <p className="text-xs font-semibold text-zinc-100">{card.match}</p>
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    <span className={`rounded border px-2 py-0.5 text-[10px] font-semibold ${decisionBadgeClass(card.color)}`}>
-                      {card.decision}
-                    </span>
-                    <span className="rounded border border-zinc-600 px-2 py-0.5 text-[10px] font-semibold text-zinc-300">
-                      {card.confidence}%
-                    </span>
-                  </div>
-                </div>
-                <p className="mt-1 text-[11px] text-zinc-500">
-                  Top strategies:{" "}
-                  <span className="text-zinc-300">{card.topStrategies.length > 0 ? card.topStrategies.join(", ") : "None"}</span>
-                </p>
-                <p className="mt-1 text-[11px] text-zinc-500">{card.reason}</p>
-
-                <div className="mt-2">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setExpandedDetails((prev) => ({
-                        ...prev,
-                        [card.match]: !prev[card.match],
-                      }))
-                    }
-                    className="rounded-md border border-zinc-600 px-2 py-1 text-[10px] font-semibold text-zinc-300 transition hover:bg-zinc-800/70"
-                  >
-                    {expandedDetails[card.match] ? "Hide Details" : "View Details"}
-                  </button>
-                </div>
-
-                {expandedDetails[card.match] ? (
-                  <div className="mt-3 overflow-x-auto rounded-lg border border-zinc-700/80 bg-zinc-950/50">
-                    <table className="w-full min-w-[280px] border-collapse text-left text-[10px]">
-                      <thead>
-                        <tr className="border-b border-zinc-700/80 text-zinc-500">
-                          <th className="px-2 py-1.5 font-medium">Strategy</th>
-                          <th className="px-2 py-1.5 font-medium">Conf.</th>
-                          <th className="px-2 py-1.5 font-medium">Risk</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {orderStrategyBreakdown(card.raw.strategyBreakdown).map((row) => {
-                          const level = riskLevelFromConfidence(row.confidence);
-                          return (
-                            <tr key={row.strategy} className="border-b border-zinc-800/80 last:border-0">
-                              <td className="px-2 py-1.5 align-top text-zinc-300">{formatStrategyLabel(row.strategy)}</td>
-                              <td className="px-2 py-1.5 text-zinc-400">{row.confidence.toFixed(1)}%</td>
-                              <td className="px-2 py-1.5">
-                                <span className={`inline-block rounded border px-1.5 py-0.5 font-semibold ${riskBadgeClass(level)}`}>
-                                  {level}
-                                </span>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                ) : null}
-
-                <div className="mt-2 flex gap-2">
-                  <button
-                    type="button"
-                    disabled={card.decision !== "BET"}
-                    title={card.decision !== "BET" ? "Learning only recorded for BET signals" : undefined}
-                    onClick={() => onRecordResult(card.raw, "win")}
-                    className="rounded-md border border-emerald-500/50 px-2 py-1 text-[10px] font-semibold text-emerald-300 disabled:cursor-not-allowed disabled:opacity-40"
-                  >
-                    Mark Win
-                  </button>
-                  <button
-                    type="button"
-                    disabled={card.decision !== "BET"}
-                    title={card.decision !== "BET" ? "Learning only recorded for BET signals" : undefined}
-                    onClick={() => onRecordResult(card.raw, "loss")}
-                    className="rounded-md border border-red-500/50 px-2 py-1 text-[10px] font-semibold text-red-300 disabled:cursor-not-allowed disabled:opacity-40"
-                  >
-                    Mark Loss
-                  </button>
-                </div>
-              </div>
-            ))
-          )}
-        </div>
-      </GlassCard>
-
-      <GlassCard>
-        <p className="mb-3 text-xs uppercase tracking-[0.18em] text-zinc-400">Lambor Mind</p>
-        <div className="max-h-72 space-y-2 overflow-y-auto pr-1">
-          {chatMessages.map((m, index) => {
-            if (m.role === "user") {
-              return (
-                <div
-                  key={`u-${index}-${m.text.slice(0, 20)}`}
-                  className="max-w-[86%] rounded-xl border border-zinc-700 bg-zinc-900/80 p-2.5 text-xs text-zinc-300"
-                >
-                  <p>{m.text}</p>
-                  {m.ts ? <p className="mt-1 text-[10px] text-zinc-600">{new Date(m.ts).toLocaleTimeString()}</p> : null}
-                </div>
-              );
-            }
-            const decision = m.metadata?.decision;
-            const decisionClass =
-              decision === "APPROVE"
-                ? "border-emerald-500/50 bg-emerald-500/15 text-emerald-200"
-                : decision === "REJECT"
-                  ? "border-red-500/45 bg-red-500/10 text-red-200"
-                  : decision === "CAUTION"
-                    ? "border-amber-500/45 bg-amber-500/10 text-amber-100"
-                    : "border-emerald-500/40 bg-emerald-500/10 text-emerald-200";
-            const bodyText =
-              m.highlight && m.text.startsWith(m.highlight) ? m.text.slice(m.highlight.length).trim() : m.text;
-
-            return (
-              <div
-                key={`a-${index}-${m.timestamp ?? index}`}
-                className={`ml-auto max-w-[92%] rounded-xl border p-2.5 text-xs ${decisionClass}`}
-              >
-                {decision ? (
-                  <span className="mb-1 inline-block rounded border border-current px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide">
-                    {decision}
-                  </span>
-                ) : null}
-                {m.metadata?.mode ? (
-                  <p className="mb-1 text-[10px] uppercase tracking-wide text-zinc-500">Mode · {m.metadata.mode}</p>
-                ) : null}
-                {m.highlight ? (
-                  <p className="border-l-2 border-emerald-500/70 pl-2 font-semibold leading-snug text-zinc-100">{m.highlight}</p>
-                ) : null}
-                <p className="mt-1 whitespace-pre-wrap leading-relaxed text-zinc-300">{bodyText}</p>
-                {m.timestamp ? (
-                  <p className="mt-1.5 text-[10px] text-zinc-600">{new Date(m.timestamp).toLocaleString()}</p>
-                ) : null}
-              </div>
-            );
-          })}
-          {mindThinking ? (
-            <div className="ml-auto max-w-[92%] rounded-xl border border-zinc-600 bg-zinc-900/60 px-3 py-2 text-[11px] text-zinc-400">
-              <span className="inline-flex items-center gap-2">
-                <span className="relative flex h-2 w-2">
-                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400/60 opacity-75" />
-                  <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-400" />
-                </span>
-                Analyzing session context…
-              </span>
-            </div>
-          ) : null}
-        </div>
-        <form
-          className="mt-3 flex gap-2"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void sendMindChat();
-          }}
-        >
-          <textarea
-            value={chatDraft}
-            onChange={(event) => setChatDraft(event.target.value)}
-            rows={1}
-            className="min-h-11 max-h-36 min-w-0 flex-1 resize-y rounded-xl border border-zinc-700 bg-zinc-900/70 px-3 py-2 text-sm text-zinc-100 outline-none transition focus:border-emerald-400 focus:shadow-[0_0_20px_rgba(0,255,163,0.25)]"
-            placeholder="Performance, patterns, should I bet… or Place bet / Status"
-            enterKeyHint="send"
-            autoComplete="off"
-            aria-label="Message to LAMBOR Mind"
-          />
-          <button
-            type="submit"
-            disabled={!chatDraft.trim() || executing || mindThinking}
-            className="flex h-11 shrink-0 items-center justify-center rounded-xl border border-emerald-500/50 bg-emerald-500/15 px-4 text-emerald-300 transition hover:bg-emerald-500/25 disabled:cursor-not-allowed disabled:opacity-40"
-            aria-label="Send message"
-          >
-            <Send className="h-4 w-4" />
-          </button>
-        </form>
-        {pendingCommand ? (
-          <div className="mt-2 flex gap-2">
-            <button
-              type="button"
-              onClick={() => void runPendingCommand(pendingCommand)}
-              disabled={executing}
-              className="rounded-md border border-emerald-500/50 px-2.5 py-1 text-[11px] font-semibold text-emerald-300 disabled:opacity-40"
-            >
-              Confirm
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setPendingCommand(null);
-                setChatMessages((prev) => [
-                  ...prev,
-                  { role: "assistant", text: "Cancelled. No action executed.", timestamp: new Date().toISOString() },
-                ]);
-              }}
-              disabled={executing}
-              className="rounded-md border border-zinc-600 px-2.5 py-1 text-[11px] font-semibold text-zinc-300 disabled:opacity-40"
-            >
-              Cancel
-            </button>
-          </div>
-        ) : null}
-      </GlassCard>
-    </div>
-  );
+}) {
+  return <LamborMindChat {...props} />;
 }
 
 type LamborDashboardProps = {
@@ -917,7 +393,7 @@ type LamborDashboardProps = {
 
 export function LamborDashboard({ games, conditionsByGameId, total }: LamborDashboardProps) {
   const [activeTab, setActiveTab] = useState<TabKey>("dash");
-  const { matches: liveMatches, loading: liveLoading, error: liveError } = useLiveMatches();
+  const { matches: liveMatches, loading: liveLoading, error: liveError, lastUpdated, refetch } = useLiveMatches();
   const { data: azuroOrders = [], refetch: refetchAzuroBets } = useAzuroBets();
 
   function handleSelectLiveMatch(match: LiveMatch) {
@@ -975,11 +451,11 @@ export function LamborDashboard({ games, conditionsByGameId, total }: LamborDash
           {activeTab === "wall" && <WallScreen />}
           {activeTab === "mind" && (
             <MindScreen
-              games={games}
-              conditionsByGameId={conditionsByGameId}
               liveMatches={liveMatches}
               liveLoading={liveLoading}
               liveError={liveError}
+              lastUpdated={lastUpdated}
+              refetchLiveMatches={refetch}
               azuroOrders={azuroOrders}
               onOpenBetTab={() => setActiveTab("bet")}
             />

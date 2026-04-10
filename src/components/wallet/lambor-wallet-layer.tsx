@@ -61,7 +61,6 @@ export function LamborWalletLayer() {
     isConnecting,
     connectError,
     switchToPolygon,
-    nativeBalanceFormatted,
     balanceLoading: walletNativeLoading,
     refetchBalances: refetchWalletContext,
   } = useLamborWallet();
@@ -200,7 +199,7 @@ export function LamborWalletLayer() {
   const totalBalanceDisplay = totalBalanceUsdLabel(walletTokenWei, paymasterTotalWei, BET_TOKEN.decimals);
 
   return (
-    <div className="relative mx-auto w-full max-w-md space-y-4 pb-2">
+    <div className="relative mx-auto w-full max-w-md space-y-6 pb-2">
       {/* Toast */}
       <AnimatePresence>
         {toast ? (
@@ -283,58 +282,53 @@ export function LamborWalletLayer() {
       {isConnected && isPolygon ? (
         <>
           {/* SECTION A — Total balance */}
-          <div className="rounded-3xl border border-emerald-500/25 bg-gradient-to-b from-zinc-900/90 to-zinc-950/95 px-6 py-8 text-center shadow-[0_0_40px_rgba(0,255,163,0.08)]">
+          <div className="rounded-3xl border border-emerald-500/20 bg-gradient-to-b from-zinc-900/95 to-zinc-950 px-6 py-9 text-center shadow-[0_0_48px_rgba(0,255,163,0.06)]">
             {balLoading ? (
               <p className="text-sm text-emerald-200/80">Fetching balance…</p>
             ) : (
               <>
-                <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-zinc-500">Total balance</p>
-                <p className="mt-2 text-4xl font-bold tabular-nums tracking-tight text-white">
-                  <span className="text-zinc-400">$</span>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-zinc-500">Total balance</p>
+                <p className="mt-3 text-4xl font-bold tabular-nums tracking-tight text-white sm:text-5xl">
+                  <span className="text-emerald-400/90">$</span>
                   {totalBalanceDisplay}
-                </p>
-                <p className="mt-2 text-[11px] text-zinc-500">
-                  Wallet + Paymaster · {BET_TOKEN.symbol} (USD-pegged)
                 </p>
               </>
             )}
           </div>
 
           {/* SECTION B — Wallet card */}
-          <div className="rounded-2xl border border-zinc-700/60 bg-zinc-900/50 p-4 shadow-inner">
+          <div className="rounded-2xl border border-zinc-700/50 bg-zinc-900/40 p-5 shadow-inner">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
-                <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-500">Your wallet</p>
-                <p className="mt-1 truncate font-mono text-sm text-emerald-300">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-500">Wallet</p>
+                <p className="mt-1 truncate font-mono text-sm text-zinc-200">
                   {depositAddress ? shortenAddress(depositAddress) : "—"}
                 </p>
               </div>
-              <span className="shrink-0 rounded-full border border-emerald-500/35 bg-emerald-500/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-emerald-300">
-                On-chain
+              <span className="shrink-0 rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1 text-[9px] font-semibold uppercase tracking-widest text-emerald-300">
+                ON-CHAIN
               </span>
             </div>
-            <div className="mt-4 rounded-xl border border-zinc-800/80 bg-zinc-950/50 px-3 py-2.5">
-              <p className="text-[10px] uppercase tracking-wide text-zinc-500">Available to bet</p>
-              <p className="mt-0.5 text-lg font-semibold tabular-nums text-emerald-200">
+            <div className="mt-6 border-t border-zinc-800/80 pt-6">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-emerald-400/90">LAMBOR BALANCE</p>
+              <p className="mt-2 text-3xl font-bold tabular-nums tracking-tight text-emerald-300 sm:text-[2rem]">
                 {balLoading ? "…" : formatToken(freeBetsWei, BET_TOKEN.decimals, BET_TOKEN.symbol)}
               </p>
-              <p className="mt-1 text-[10px] text-zinc-600">Paymaster free balance</p>
             </div>
-            <div className="mt-3 grid grid-cols-2 gap-2 text-[11px]">
-              <div className="rounded-lg border border-zinc-800/80 bg-black/20 px-2 py-1.5">
-                <span className="text-zinc-500">Wallet</span>
-                <p className="font-medium text-zinc-200">
+            <div className="mt-6 grid grid-cols-2 gap-3 border-t border-zinc-800/80 pt-6 text-[10px]">
+              <div>
+                <p className="font-medium uppercase tracking-wide text-zinc-500">Wallet balance</p>
+                <p className="mt-1 tabular-nums text-sm text-zinc-400">
                   {balLoading ? "…" : formatToken(walletTokenWei, BET_TOKEN.decimals, BET_TOKEN.symbol)}
                 </p>
               </div>
-              <div className="rounded-lg border border-zinc-800/80 bg-black/20 px-2 py-1.5">
-                <span className="text-zinc-500">Fee pool</span>
-                <p className="font-medium text-zinc-200">
+              <div>
+                <p className="font-medium uppercase tracking-wide text-zinc-500">Fee pool</p>
+                <p className="mt-1 tabular-nums text-sm text-zinc-400">
                   {balLoading ? "…" : formatToken(feeWei, BET_TOKEN.decimals, BET_TOKEN.symbol)}
                 </p>
               </div>
             </div>
-            <p className="mt-2 text-[10px] text-zinc-600">Gas: {balLoading ? "…" : nativeBalanceFormatted}</p>
           </div>
 
           {/* Claim row */}
@@ -350,8 +344,8 @@ export function LamborWalletLayer() {
           ) : null}
 
           {/* SECTION C — Deposit / Withdraw */}
-          <div className="overflow-hidden rounded-2xl border border-zinc-700/60 bg-zinc-900/40 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
-            <div className="grid grid-cols-2 gap-0 p-1">
+          <div className="overflow-hidden rounded-2xl border border-zinc-700/50 bg-zinc-900/35 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+            <div className="grid grid-cols-2 gap-0 p-1.5">
               <button
                 type="button"
                 onClick={() => setWalletMode("deposit")}
@@ -398,12 +392,9 @@ export function LamborWalletLayer() {
                   animate={{ opacity: 1, x: 0 }}
                   exit={{ opacity: 0, x: 6 }}
                   transition={{ duration: 0.18 }}
-                  className="space-y-3 border-t border-zinc-800/80 p-4"
+                  className="space-y-4 border-t border-zinc-800/80 p-5"
                 >
-                  <p className="text-xs text-zinc-500">
-                    Move {BET_TOKEN.symbol} from your wallet into Azuro PayMaster to bet.
-                  </p>
-                  <label className="block text-xs font-medium text-zinc-400">
+                  <label className="block text-[11px] font-medium uppercase tracking-wide text-zinc-500">
                     Amount
                     <input
                       type="number"
@@ -432,10 +423,9 @@ export function LamborWalletLayer() {
                   animate={{ opacity: 1, x: 0 }}
                   exit={{ opacity: 0, x: -6 }}
                   transition={{ duration: 0.18 }}
-                  className="space-y-3 border-t border-zinc-800/80 p-4"
+                  className="space-y-4 border-t border-zinc-800/80 p-5"
                 >
-                  <p className="text-xs text-zinc-500">Withdraw from PayMaster back to your wallet.</p>
-                  <label className="block text-xs font-medium text-zinc-400">
+                  <label className="block text-[11px] font-medium uppercase tracking-wide text-zinc-500">
                     Free bet amount
                     <input
                       type="number"
@@ -448,7 +438,7 @@ export function LamborWalletLayer() {
                       className="mt-1.5 w-full rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-3 text-base text-zinc-100 outline-none focus:ring-2 focus:ring-emerald-500/25 disabled:opacity-50"
                     />
                   </label>
-                  <label className="block text-xs font-medium text-zinc-400">
+                  <label className="block text-[11px] font-medium uppercase tracking-wide text-zinc-500">
                     Fee amount
                     <input
                       type="number"
@@ -461,10 +451,6 @@ export function LamborWalletLayer() {
                       className="mt-1.5 w-full rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-3 text-base text-zinc-100 outline-none focus:ring-2 focus:ring-emerald-500/25 disabled:opacity-50"
                     />
                   </label>
-                  <p className="text-[10px] text-zinc-600">
-                    Max free {formatUnits(freeBetsWei, BET_TOKEN.decimals)} · Max fee{" "}
-                    {formatUnits(feeWei, BET_TOKEN.decimals)}
-                  </p>
                   <button
                     type="button"
                     disabled={
@@ -483,7 +469,7 @@ export function LamborWalletLayer() {
           </div>
 
           {/* SECTION D — Pending settlement */}
-          <div className="rounded-2xl border border-zinc-700/60 bg-zinc-900/35 p-4">
+          <div className="rounded-2xl border border-zinc-700/50 bg-zinc-900/30 p-5">
             <div className="flex items-center justify-between gap-2">
               <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-500">Awaiting settlement</p>
               {ordersLoading ? (
