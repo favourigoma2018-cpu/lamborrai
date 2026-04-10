@@ -1,67 +1,79 @@
 "use client";
 
-import { useAccount, useConnect, useDisconnect, useChainId, useSwitchChain } from "wagmi";
-
-import { targetChain } from "@/config/chain";
+import { useLamborWallet } from "@/contexts/lambor-wallet-context";
 
 function shortenAddress(address: string) {
   return `${address.slice(0, 6)}…${address.slice(-4)}`;
 }
 
 export function WalletControls() {
-  const { address, isConnected, isConnecting } = useAccount();
-  const chainId = useChainId();
-  const { connect, connectors, isPending, error: connectError } = useConnect();
-  const { disconnect } = useDisconnect();
-  const { switchChain, isPending: isSwitching } = useSwitchChain();
+  const {
+    isMetaMaskAvailable,
+    isConnected,
+    depositAddress,
+    isPolygon,
+    connectWallet,
+    disconnectWallet,
+    isConnecting,
+    connectError,
+    switchToPolygon,
+    betTokenBalanceFormatted,
+    balanceLoading,
+  } = useLamborWallet();
 
-  const wrongNetwork = isConnected && chainId !== targetChain.id;
+  async function onConnect() {
+    try {
+      await connectWallet();
+    } catch {
+      /* surfaced via connectError */
+    }
+  }
 
   return (
-    <div className="flex flex-wrap items-center gap-3">
+    <div className="flex flex-wrap items-center gap-2 sm:gap-3">
       {connectError ? (
         <p className="max-w-xs text-xs text-red-400" role="alert">
           {connectError.message}
         </p>
       ) : null}
 
-      {isConnected && address ? (
+      {!isMetaMaskAvailable ? (
+        <span className="text-xs text-amber-400">MetaMask required</span>
+      ) : isConnected && depositAddress ? (
         <>
-          <span className="rounded-md bg-zinc-800 px-3 py-1.5 font-mono text-sm text-zinc-200">
-            {shortenAddress(address)}
+          <span className="max-w-[10rem] truncate rounded-md bg-zinc-800 px-2 py-1.5 font-mono text-xs text-zinc-200 sm:max-w-none sm:px-3 sm:text-sm">
+            {shortenAddress(depositAddress)}
           </span>
-          {wrongNetwork ? (
+          {!isPolygon ? (
             <button
               type="button"
-              onClick={() => switchChain?.({ chainId: targetChain.id })}
-              disabled={isSwitching || !switchChain}
-              className="rounded-md bg-amber-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-amber-500 disabled:opacity-50"
+              onClick={() => void switchToPolygon()}
+              className="rounded-md bg-amber-600 px-3 py-2 text-xs font-medium text-white transition hover:bg-amber-500 sm:text-sm"
             >
-              {isSwitching ? "Switching…" : `Switch to ${targetChain.name}`}
+              Polygon only
             </button>
-          ) : null}
+          ) : (
+            <span className="hidden text-xs text-zinc-500 sm:inline">
+              {balanceLoading ? "…" : betTokenBalanceFormatted}
+            </span>
+          )}
           <button
             type="button"
-            onClick={() => disconnect()}
-            className="rounded-md border border-zinc-600 px-4 py-2 text-sm font-medium text-zinc-200 transition hover:border-zinc-500 hover:bg-zinc-800"
+            onClick={() => disconnectWallet()}
+            className="rounded-md border border-zinc-600 px-3 py-2 text-xs font-medium text-zinc-200 transition hover:border-zinc-500 hover:bg-zinc-800 sm:text-sm"
           >
             Disconnect
           </button>
         </>
       ) : (
-        <div className="flex flex-wrap gap-2">
-          {connectors.map((connector) => (
-            <button
-              key={connector.uid}
-              type="button"
-              onClick={() => connect({ connector, chainId: targetChain.id })}
-              disabled={isPending || isConnecting}
-              className="rounded-md bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {isPending || isConnecting ? "Connecting…" : `Connect ${connector.name}`}
-            </button>
-          ))}
-        </div>
+        <button
+          type="button"
+          onClick={() => void onConnect()}
+          disabled={isConnecting}
+          className="rounded-md bg-emerald-600 px-3 py-2 text-xs font-semibold text-white shadow transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50 sm:text-sm"
+        >
+          {isConnecting ? "…" : "MetaMask"}
+        </button>
       )}
     </div>
   );

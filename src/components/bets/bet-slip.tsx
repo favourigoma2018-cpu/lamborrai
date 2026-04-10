@@ -6,7 +6,11 @@ import type { Address } from "viem";
 import { useAccount, useChainId, useSignTypedData, useSwitchChain } from "wagmi";
 
 import { AzuroBetsList } from "@/components/bets/azuro-bets-list";
+import { useLamborWallet } from "@/contexts/lambor-wallet-context";
 import { AZURO_CHAIN_ID, targetChain } from "@/config/chain";
+import { BET_TOKEN } from "@/config/azuro-polygon-contracts";
+import { formatUnits } from "ethers";
+import { usePaymasterBalances } from "@/hooks/use-paymaster-balances";
 import { useAzuroBets, useInvalidateAzuroBets } from "@/hooks/use-azuro-bets";
 import { useAzuroNewBetListener } from "@/hooks/use-azuro-new-bet-event";
 import {
@@ -60,6 +64,14 @@ export function BetSlip({
   const { address } = useAccount();
   const chainId = useChainId();
   const { switchChain } = useSwitchChain();
+  const {
+    betTokenSymbol,
+    isPolygon: walletOnPolygon,
+    balanceLoading: walletBalanceLoading,
+    refetchBalances: refetchWalletBalances,
+  } = useLamborWallet();
+  const { freeBetsWei, refetch: refetchPmBalances, loading: pmLoading } = usePaymasterBalances();
+  const stakingBalanceNumber = Number.parseFloat(formatUnits(freeBetsWei, BET_TOKEN.decimals));
   const invalidateAzuro = useInvalidateAzuroBets();
   const { data: azuroOrders = [], isLoading: isLoadingBets } = useAzuroBets();
   useAzuroNewBetListener();
@@ -83,7 +95,23 @@ export function BetSlip({
 
   const isExecutable = selection?.executable !== false;
 
-  const canPrepare = Boolean(selection && address && Number.parseFloat(amount) > 0 && isExecutable);
+  const stakeNum = Number.parseFloat(amount);
+  const stakeOk = Number.isFinite(stakeNum) && stakeNum > 0;
+  const pendingReserve = txState === "pending" || parlayRunning ? stakeNum : 0;
+  const effectiveStakeBalance = Math.max(0, stakingBalanceNumber - (Number.isFinite(pendingReserve) ? pendingReserve : 0));
+  const balanceLoading = walletBalanceLoading || pmLoading;
+  const insufficientStake =
+    stakeOk && !balanceLoading && walletOnPolygon && stakeNum > stakingBalanceNumber;
+
+  const canPrepare = Boolean(
+    selection &&
+      address &&
+      stakeOk &&
+      isExecutable &&
+      walletOnPolygon &&
+      !insufficientStake &&
+      !balanceLoading,
+  );
   const canPlaceBet = Boolean(canPrepare && prepared && !isPreparing && txState !== "pending");
 
   async function ensureAzuroChain() {
@@ -146,6 +174,8 @@ export function BetSlip({
       });
 
       await invalidateAzuro();
+      await refetchWalletBalances();
+      await refetchPmBalances();
       onPlaced?.();
       setTxState("success");
       setSuccessMessage("Order sent to Azuro. Relayer submits to Polygon — status updates below.");
@@ -158,7 +188,13 @@ export function BetSlip({
 
   const parlayLegs = parlaySelections?.filter((x) => x.executable !== false) ?? [];
   const parlayEligible =
-    parlayLegs.length >= 2 && Number.parseFloat(amount) > 0 && Boolean(address) && !parlayRunning;
+    parlayLegs.length >= 2 &&
+    stakeOk &&
+    Boolean(address) &&
+    !parlayRunning &&
+    walletOnPolygon &&
+    !insufficientStake &&
+    !balanceLoading;
 
   async function onPlaceParlay() {
     if (!address || !parlayEligible) return;
@@ -192,6 +228,8 @@ export function BetSlip({
         ...prep.submitPayload,
       });
       await invalidateAzuro();
+      await refetchWalletBalances();
+      await refetchPmBalances();
       setTxState("success");
       setSuccessMessage(`Combo order submitted (${n} legs, one signature).`);
       onParlayComplete?.();
@@ -253,12 +291,27 @@ export function BetSlip({
 
           <div className="rounded-md border border-zinc-800 bg-zinc-950/50 px-3 py-2 text-sm">
             <p className="flex items-center justify-between text-zinc-400">
+              <span>PayMaster stake ({betTokenSymbol})</span>
+              <span className="font-semibold text-zinc-200">
+                {balanceLoading ? "…" : effectiveStakeBalance.toFixed(4)}
+              </span>
+            </p>
+            <p className="mt-1 flex items-center justify-between text-zinc-400">
               <span>Potential payout</span>
               <span className="font-semibold text-zinc-200">
                 {potentialPayout ? potentialPayout.toFixed(4) : "-"}
               </span>
             </p>
           </div>
+
+          {insufficientStake ? (
+            <p className="text-xs text-red-300">
+              Stake exceeds your PayMaster free balance. Deposit USDT to PayMaster on the Wall tab first.
+            </p>
+          ) : null}
+          {!walletOnPolygon && address ? (
+            <p className="text-xs text-amber-300">Switch MetaMask to Polygon to bet.</p>
+          ) : null}
 
           <button
             type="button"

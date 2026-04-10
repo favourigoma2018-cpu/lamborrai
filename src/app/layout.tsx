@@ -17,7 +17,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Bet3 · Azuro Sportsbook",
-  description: "Decentralized sportsbook on Azuro Protocol (Base Sepolia).",
+  description: "Non-custodial sportsbook on Azuro Protocol — Polygon mainnet, MetaMask.",
 };
 
 export default function RootLayout({

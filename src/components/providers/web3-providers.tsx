@@ -4,6 +4,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
 import { WagmiProvider } from "wagmi";
 
+import { AutoWithdrawOnWinListener } from "@/components/wallet/auto-withdraw-listener";
+import { LamborWalletProvider } from "@/contexts/lambor-wallet-context";
 import { wagmiConfig } from "@/lib/wagmi/config";
 
 type Web3ProvidersProps = {
@@ -25,7 +27,12 @@ export function Web3Providers({ children }: Web3ProvidersProps) {
 
   return (
     <WagmiProvider config={wagmiConfig}>
-      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      <QueryClientProvider client={queryClient}>
+        <LamborWalletProvider>
+          {children}
+          <AutoWithdrawOnWinListener />
+        </LamborWalletProvider>
+      </QueryClientProvider>
     </WagmiProvider>
   );
 }
