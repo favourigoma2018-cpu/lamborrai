@@ -5,10 +5,11 @@ import { BarChart3, Brain, CircleDollarSign, Cpu, Flame, Wallet } from "lucide-r
 import type { BetOrderData, GameData } from "@azuro-org/toolkit";
 import { BetOrderResult, BetOrderState } from "@azuro-org/toolkit";
 import type { ComponentType, ReactNode } from "react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import type { BetSlipSelection } from "@/components/bets/bet-slip";
 import { BetPage } from "@/components/bets/bet-page";
+import { BetSlipProvider } from "@/contexts/bet-slip-context";
 import { LamborMindChat } from "@/components/lambor/LamborMindChat";
 import { LiveMatchesPanel } from "@/components/lambor/live-matches-panel";
 import { StrategyInsightsStrip } from "@/components/lambor/strategy-insights";
@@ -18,7 +19,9 @@ import { useLiveMatches } from "@/hooks/use-live-matches";
 import type { ConditionsByGameId } from "@/lib/azuro/fetch-conditions";
 import { useAzuroBets, useInvalidateAzuroBets } from "@/hooks/use-azuro-bets";
 import { azuroBetPnl, formatAzuroBetTitle, isAzuroBetOpen } from "@/lib/azuro/bet-helpers";
-import { pickSelectionFromLiveMatch } from "@/lib/lambor/pick-selection-from-live";
+import { isValidAzuroSlipSelection } from "@/lib/azuro/slip-selection-guards";
+import { useBetSlip } from "@/contexts/bet-slip-context";
+import { pickSelectionFromAzuroGame, pickSelectionFromLiveMatch } from "@/lib/lambor/pick-selection-from-live";
 import { processLamborStrategy } from "@/lib/lambor-ai/decision-engine";
 import type { LiveMatch } from "@/types/live-matches";
 
@@ -77,10 +80,21 @@ function splitTeamsFromTitle(title: string): { home: string; away: string } {
   return { home: normalized, away: "" };
 }
 
-function engineGlowClass(color: "green" | "yellow" | "red") {
-  if (color === "green") return "border-emerald-500/35 shadow-[0_0_24px_rgba(0,255,163,0.12)]";
-  if (color === "yellow") return "border-amber-500/35 shadow-[0_0_24px_rgba(245,158,11,0.12)]";
-  return "border-red-500/30 shadow-[0_0_22px_rgba(239,68,68,0.10)]";
+function findGameForEnginePickTitle(pickMatch: string, games: GameData[]): GameData | null {
+  const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
+  const target = norm(pickMatch);
+  for (const game of games) {
+    const { home, away } = splitTeamsFromTitle(game.title);
+    const label = norm(`${home} vs ${away || "TBD"}`);
+    if (label === target || norm(game.title) === target) return game;
+  }
+  return null;
+}
+
+function engineConfidenceTier(confidence: number): "high" | "mid" | "low" {
+  if (confidence >= 75) return "high";
+  if (confidence >= 60) return "mid";
+  return "low";
 }
 
 function enginePillClass(color: "green" | "yellow" | "red") {
@@ -89,23 +103,48 @@ function enginePillClass(color: "green" | "yellow" | "red") {
   return "border-red-500/40 bg-red-500/10 text-red-300";
 }
 
+function engineTierGlow(tier: "high" | "mid" | "low") {
+  if (tier === "high") return "border-emerald-500/50 shadow-[0_0_22px_rgba(0,255,163,0.18)]";
+  if (tier === "mid") return "border-amber-500/45 shadow-[0_0_20px_rgba(245,158,11,0.14)]";
+  return "border-red-500/40 shadow-[0_0_18px_rgba(239,68,68,0.12)]";
+}
+
+function engineTierLabelClass(tier: "high" | "mid" | "low") {
+  if (tier === "high") return "text-emerald-300";
+  if (tier === "mid") return "text-amber-200";
+  return "text-red-300";
+}
+
+function engineAddButtonClass(tier: "high" | "mid" | "low", disabled: boolean) {
+  if (disabled) return "border-zinc-700 bg-zinc-800/60 text-zinc-500";
+  if (tier === "high") return "border-emerald-400/70 bg-emerald-500/20 text-emerald-100 hover:bg-emerald-500/30";
+  if (tier === "mid") return "border-amber-400/60 bg-amber-500/15 text-amber-100 hover:bg-amber-500/25";
+  return "border-red-400/55 bg-red-500/15 text-red-100 hover:bg-red-500/25";
+}
+
 function EnginePickCard({
   pick,
   isBestPick,
-  onSelect,
+  selection,
+  hasAzuro,
+  inSlip,
+  marketLabel,
+  oddsLabel,
+  onAddToBet,
 }: {
   pick: ReturnType<typeof processLamborStrategy>["results"][number];
   isBestPick: boolean;
-  onSelect: (selection: BetSlipSelection) => void;
+  selection: BetSlipSelection | null;
+  hasAzuro: boolean;
+  inSlip: boolean;
+  marketLabel: string;
+  oddsLabel: string;
+  onAddToBet: () => void;
 }) {
-  const action =
-    pick.confidence >= 80 ? { text: "Bet Now", style: "green" as const } : pick.confidence >= 60 ? { text: "Consider", style: "yellow" as const } : { text: "Avoid", style: "red" as const };
-
-  const [home, away] = pick.match.split(" vs ").map((s) => s.trim());
-  const canSelect = action.style !== "red" && Boolean(home) && Boolean(away);
+  const tier = engineConfidenceTier(pick.confidence);
 
   return (
-    <div className={`rounded-2xl border bg-zinc-900/55 p-4 backdrop-blur-xl ${engineGlowClass(pick.color)}`}>
+    <div className={`rounded-2xl border bg-zinc-900/55 p-4 backdrop-blur-xl ${engineTierGlow(tier)}`}>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           {isBestPick ? (
@@ -114,17 +153,19 @@ function EnginePickCard({
             </div>
           ) : null}
           <p className="truncate text-sm font-semibold text-zinc-100">{pick.match}</p>
+          <p className="mt-0.5 text-[11px] text-zinc-400">{marketLabel}</p>
           <p className="mt-1 text-[11px] text-zinc-500">{pick.reason}</p>
         </div>
         <div className="shrink-0 text-right">
-          <p className="text-2xl font-semibold text-zinc-100">{pick.confidence}%</p>
+          <p className={`text-2xl font-semibold ${engineTierLabelClass(tier)}`}>{pick.confidence}%</p>
+          <p className="mt-1 text-sm font-semibold text-emerald-300">{oddsLabel}</p>
           <div className="mt-1 flex items-center justify-end gap-1.5">
             <span className={`rounded border px-2 py-0.5 text-[10px] font-semibold ${enginePillClass(pick.color)}`}>{pick.label}</span>
           </div>
         </div>
       </div>
 
-      <div className="mt-3 flex items-center justify-between gap-2">
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
         <span
           className={`rounded border px-2 py-0.5 text-[10px] font-semibold ${
             pick.decision === "BET" ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300" : "border-zinc-600 bg-zinc-800/80 text-zinc-400"
@@ -132,30 +173,20 @@ function EnginePickCard({
         >
           {pick.decision}
         </span>
-
         <button
           type="button"
-          disabled={!canSelect}
-          onClick={() =>
-            onSelect({
-              gameTitle: pick.match,
-              marketTitle: "LAMBOR Engine Pick",
-              outcomeTitle: action.text,
-              conditionId: "engine",
-              outcomeId: "engine",
-              odds: "1.00",
-              executable: false,
-            })
+          disabled={!hasAzuro || !Boolean(selection?.conditionId?.trim()) || inSlip}
+          title={
+            !hasAzuro || !selection?.conditionId
+              ? "No Azuro condition mapped for this fixture."
+              : inSlip
+                ? "Already on your bet slip."
+                : "Add this leg to the bet slip."
           }
-          className={`rounded-xl border px-3 py-2 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-40 ${
-            action.style === "green"
-              ? "border-emerald-400/60 bg-emerald-500/10 text-emerald-300 shadow-[0_0_18px_rgba(0,255,163,0.25)] hover:bg-emerald-500/20"
-              : action.style === "yellow"
-                ? "border-amber-400/60 bg-amber-500/10 text-amber-200 shadow-[0_0_16px_rgba(245,158,11,0.18)] hover:bg-amber-500/15"
-                : "border-red-500/40 bg-red-500/10 text-red-300"
-          }`}
+          onClick={onAddToBet}
+          className={`rounded-xl border px-4 py-2.5 text-xs font-bold transition active:scale-[0.99] ${engineAddButtonClass(tier, !hasAzuro || !selection?.conditionId || inSlip)}`}
         >
-          {action.text}
+          {inSlip ? "Added" : "Add to Bet"}
         </button>
       </div>
     </div>
@@ -166,7 +197,6 @@ type DashScreenProps = {
   games: GameData[];
   total: number;
   azuroOrders: BetOrderData[];
-  onSelect: (selection: BetSlipSelection) => void;
   conditionsByGameId: ConditionsByGameId;
   liveMatches: LiveMatch[];
   liveLoading: boolean;
@@ -179,7 +209,6 @@ function DashScreen({
   games,
   total,
   azuroOrders,
-  onSelect,
   conditionsByGameId,
   liveMatches,
   liveLoading,
@@ -187,6 +216,14 @@ function DashScreen({
   onSelectLive,
   onOpenBetTab,
 }: DashScreenProps) {
+  const { addSelection, items: slipItems } = useBetSlip();
+  const [dashToast, setDashToast] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!dashToast) return;
+    const t = window.setTimeout(() => setDashToast(null), 2200);
+    return () => window.clearTimeout(t);
+  }, [dashToast]);
   const netToday = useMemo(() => {
     const today = new Date().toDateString();
     return azuroOrders
@@ -225,7 +262,21 @@ function DashScreen({
   const topPicks = engineOutput.results.slice(0, 5);
 
   return (
-    <div className="space-y-4">
+    <div className="relative space-y-4">
+      <AnimatePresence>
+        {dashToast ? (
+          <motion.div
+            key="dash-toast"
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 4 }}
+            className="pointer-events-none fixed left-1/2 top-24 z-[60] w-[min(100%-2rem,20rem)] -translate-x-1/2 rounded-xl border border-emerald-500/45 bg-zinc-950/95 px-4 py-2.5 text-center text-sm font-semibold text-emerald-100 shadow-[0_8px_30px_rgba(0,0,0,0.5)]"
+          >
+            {dashToast}
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+
       <div className="grid grid-cols-2 gap-3">
         <GlassCard>
           <p className="text-xs uppercase tracking-[0.18em] text-zinc-400">Today&apos;s Net</p>
@@ -321,14 +372,46 @@ function DashScreen({
           <p className="text-xs text-zinc-500">No eligible matches for today (valid odds required).</p>
         ) : (
           <div className="space-y-3">
-            {topPicks.map((pick) => (
-              <EnginePickCard
-                key={pick.match}
-                pick={pick}
-                isBestPick={engineOutput.bestPick?.match === pick.match}
-                onSelect={onSelect}
-              />
-            ))}
+            {topPicks.map((pick) => {
+              const game = findGameForEnginePickTitle(pick.match, games);
+              const selection = game ? pickSelectionFromAzuroGame(game, conditionsByGameId) : null;
+              const hasAzuro =
+                selection != null &&
+                Boolean(selection.conditionId?.trim()) &&
+                isValidAzuroSlipSelection(selection);
+              const mk =
+                hasAzuro && selection?.gameId ? (`azuro:${selection.gameId}` as const) : null;
+              const inSlip = mk != null && slipItems.some((i) => i.matchKey === mk);
+              const marketLabel = selection?.marketTitle ?? "—";
+              const oddsLabel = selection?.odds ?? "—";
+
+              return (
+                <EnginePickCard
+                  key={pick.match}
+                  pick={pick}
+                  isBestPick={engineOutput.bestPick?.match === pick.match}
+                  selection={selection}
+                  hasAzuro={hasAzuro}
+                  inSlip={inSlip}
+                  marketLabel={marketLabel}
+                  oddsLabel={oddsLabel}
+                  onAddToBet={() => {
+                    if (!selection || !hasAzuro) return;
+                    const out = addSelection(selection);
+                    if (out === "duplicate" || inSlip) {
+                      setDashToast("Already in bet slip");
+                      return;
+                    }
+                    if (out === "invalid") {
+                      setDashToast("Could not add — missing Azuro data");
+                      return;
+                    }
+                    setDashToast("Added to bet slip");
+                    onOpenBetTab();
+                  }}
+                />
+              );
+            })}
           </div>
         )}
       </GlassCard>
@@ -401,6 +484,7 @@ export function LamborDashboard({ games, conditionsByGameId, total }: LamborDash
   }
 
   return (
+    <BetSlipProvider liveMatches={liveMatches}>
     <div className="mx-auto min-h-screen w-full max-w-md bg-[#0b0f14] px-4 pb-28 pt-5 text-zinc-100">
       <div className="pointer-events-none fixed inset-0 -z-10 bg-[radial-gradient(circle_at_top,rgba(0,255,163,0.14),rgba(0,0,0,0)_38%),radial-gradient(circle_at_bottom,rgba(0,255,136,0.08),rgba(0,0,0,0)_45%)]" />
 
@@ -430,7 +514,6 @@ export function LamborDashboard({ games, conditionsByGameId, total }: LamborDash
               games={games}
               total={total}
               azuroOrders={azuroOrders}
-              onSelect={() => setActiveTab("bet")}
               conditionsByGameId={conditionsByGameId}
               liveMatches={liveMatches}
               liveLoading={liveLoading}
@@ -500,5 +583,6 @@ export function LamborDashboard({ games, conditionsByGameId, total }: LamborDash
         </div>
       </nav>
     </div>
+    </BetSlipProvider>
   );
 }

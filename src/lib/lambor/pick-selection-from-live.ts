@@ -168,3 +168,29 @@ export function pickSelectionFromLiveMatch(
     conditionKind: "LIVE",
   };
 }
+
+/** First Azuro condition/outcome for a prematch game (dashboard engine, no API-Football row). */
+export function pickSelectionFromAzuroGame(
+  game: GameData,
+  conditionsByGameId: ConditionsByGameId,
+): BetSlipSelection | null {
+  const condition = (conditionsByGameId[game.gameId] ?? [])[0];
+  const outcome = condition?.outcomes?.[0];
+  if (!condition || !outcome) return null;
+
+  const oddsStr = String(outcome.odds);
+  const dec = Number.parseFloat(oddsStr);
+  if (!Number.isFinite(dec) || dec <= 1) return null;
+
+  return {
+    gameTitle: game.title,
+    marketTitle: condition.title ?? `Market ${condition.conditionId}`,
+    outcomeTitle: outcome.title ?? `Outcome ${outcome.outcomeId}`,
+    conditionId: condition.conditionId,
+    outcomeId: outcome.outcomeId,
+    odds: oddsStr,
+    executable: true,
+    gameId: game.gameId,
+    conditionKind: "LIVE",
+  };
+}

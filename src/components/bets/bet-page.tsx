@@ -4,7 +4,9 @@ import { AnimatePresence, motion } from "framer-motion";
 import { ChevronDown, ChevronUp, Sparkles, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
+import { useBetSlip } from "@/contexts/bet-slip-context";
 import { isValidAzuroSlipSelection } from "@/lib/azuro/slip-selection-guards";
+import { matchKeyFromLive } from "@/lib/lambor/match-key";
 import { drainSlipQueue } from "@/lib/lambor/slip-queue";
 
 import type { BetSlipSelection } from "@/components/bets/bet-slip";
@@ -17,6 +19,7 @@ import { BetOrderResult, BetOrderState } from "@azuro-org/toolkit";
 
 import type { LiveMatch } from "@/types/live-matches";
 import type { LamborMarketGroup, MatchMarketsPayload } from "@/types/betting-markets";
+import { BET_TOKEN } from "@/config/azuro-polygon-contracts";
 import { useAzuroBets } from "@/hooks/use-azuro-bets";
 import { azuroBetPnl, formatAzuroBetTitle, isAzuroBetOpen } from "@/lib/azuro/bet-helpers";
 
@@ -29,28 +32,8 @@ type BetPageProps = {
 
 type BetTabKey = "slip" | "history";
 
-type SlipItem = {
-  id: string;
-  matchKey: string;
-  selection: BetSlipSelection;
-  addedAt: number;
-};
-
 function clamp(value: number, min = 0, max = 100) {
   return Math.max(min, Math.min(max, value));
-}
-
-function normalizeName(value: string) {
-  return value
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, " ")
-    .replace(/\b(fc|cf|sc|ac|club|deportivo|sporting)\b/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function matchKeyFromLive(match: LiveMatch) {
-  return `${normalizeName(match.homeTeam)}__${normalizeName(match.awayTeam)}`;
 }
 
 function guessLiveForOrder(order: BetOrderData, liveMatches: LiveMatch[]): LiveMatch | null {
@@ -351,112 +334,6 @@ function LiveMatchMarketsSection({
   );
 }
 
-function SlipBuilder({
-  items,
-  activeId,
-  onActivate,
-  onRemove,
-  stake,
-  onStakeChange,
-}: {
-  items: SlipItem[];
-  activeId: string | null;
-  onActivate: (id: string) => void;
-  onRemove: (id: string) => void;
-  stake: string;
-  onStakeChange: (value: string) => void;
-}) {
-  const totalOdds = useMemo(() => {
-    const product = items.reduce((acc, item) => acc * (Number.parseFloat(item.selection.odds) || 1), 1);
-    return Number.isFinite(product) ? product : 0;
-  }, [items]);
-
-  const payout = useMemo(() => {
-    const stakeNum = Number.parseFloat(stake);
-    if (!Number.isFinite(stakeNum) || stakeNum <= 0) return null;
-    if (!Number.isFinite(totalOdds) || totalOdds <= 0) return null;
-    return stakeNum * totalOdds;
-  }, [stake, totalOdds]);
-
-  return (
-    <div className="space-y-3">
-      {items.length === 0 ? (
-        <p className="text-sm text-zinc-500">Tap a price or Quick to build your slip.</p>
-      ) : (
-        <div className="max-h-36 space-y-2 overflow-y-auto pr-1">
-          <AnimatePresence initial={false}>
-            {items.map((item) => {
-              const active = item.id === activeId;
-              return (
-                <motion.button
-                  key={item.id}
-                  layout
-                  type="button"
-                  initial={{ opacity: 0, y: 8 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -8 }}
-                  onClick={() => onActivate(item.id)}
-                  className={`w-full rounded-xl border p-2.5 text-left transition ${
-                    active
-                      ? "border-emerald-400/60 bg-emerald-500/10 shadow-[0_0_18px_rgba(0,255,163,0.18)]"
-                      : "border-zinc-700/70 bg-zinc-900/60 hover:border-zinc-600"
-                  }`}
-                >
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <p className="truncate text-xs font-semibold text-zinc-100">{item.selection.gameTitle}</p>
-                      <p className="mt-0.5 truncate text-[10px] text-zinc-500">{item.selection.marketTitle}</p>
-                      <p className="mt-0.5 truncate text-[10px] text-zinc-400">{item.selection.outcomeTitle}</p>
-                    </div>
-                    <div className="flex items-center gap-1.5">
-                      <span className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 text-[11px] font-semibold text-emerald-300">
-                        {item.selection.odds}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onRemove(item.id);
-                        }}
-                        className="rounded-lg border border-zinc-700 p-1.5 text-zinc-300 transition hover:bg-zinc-800/70"
-                        aria-label="Remove bet"
-                      >
-                        <X className="h-3.5 w-3.5" />
-                      </button>
-                    </div>
-                  </div>
-                </motion.button>
-              );
-            })}
-          </AnimatePresence>
-        </div>
-      )}
-
-      <div className="grid grid-cols-2 gap-2">
-        <label className="block text-sm">
-          <span className="mb-1 block text-[10px] uppercase tracking-[0.14em] text-zinc-400">Stake ($)</span>
-          <input
-            inputMode="decimal"
-            value={stake}
-            onChange={(e) => onStakeChange(e.target.value)}
-            placeholder="0.00"
-            className="h-10 w-full rounded-xl border border-zinc-700 bg-zinc-900/70 px-2.5 text-sm text-zinc-100 outline-none transition focus:border-emerald-400"
-          />
-        </label>
-        <div className="rounded-xl border border-zinc-700 bg-zinc-900/70 p-2.5">
-          <p className="text-[10px] uppercase tracking-[0.14em] text-zinc-400">Acca odds</p>
-          <p className="mt-0.5 text-base font-semibold text-zinc-100">{totalOdds.toFixed(2)}x</p>
-        </div>
-      </div>
-
-      <div className="rounded-xl border border-emerald-400/25 bg-emerald-500/10 px-2.5 py-2 text-xs">
-        <span className="text-zinc-300">Potential payout:</span>{" "}
-        <span className="font-semibold text-emerald-300">{payout ? `$${payout.toFixed(2)}` : "-"}</span>
-      </div>
-    </div>
-  );
-}
-
 function ActiveBets({ orders, liveMatches }: { orders: BetOrderData[]; liveMatches: LiveMatch[] }) {
   const open = orders.filter(isAzuroBetOpen);
   if (open.length === 0) {
@@ -536,9 +413,6 @@ function SlipTabContent({
   liveMatches,
   liveLoading,
   liveError,
-  slipItems,
-  activeId,
-  stake,
   azuroOrders,
   marketsByMatchId,
   loadingMarketId,
@@ -546,19 +420,12 @@ function SlipTabContent({
   setExpandedId,
   loadMarketsForMatch,
   onQuickBet,
-  onActivate,
-  onRemove,
-  onStakeChange,
-  onClearActive,
   onPlaced,
-  onParlayComplete,
+  onAfterParlay,
 }: {
   liveMatches: LiveMatch[];
   liveLoading: boolean;
   liveError: string | null;
-  slipItems: SlipItem[];
-  activeId: string | null;
-  stake: string;
   azuroOrders: BetOrderData[];
   marketsByMatchId: Record<number, MatchMarketsPayload>;
   loadingMarketId: number | null;
@@ -566,16 +433,28 @@ function SlipTabContent({
   setExpandedId: (id: number | null) => void;
   loadMarketsForMatch: (id: number) => void;
   onQuickBet: (match: LiveMatch) => void;
-  onActivate: (id: string) => void;
-  onRemove: (id: string) => void;
-  onStakeChange: (value: string) => void;
-  onClearActive: () => void;
   onPlaced: () => void;
-  onParlayComplete: () => void;
+  onAfterParlay: () => void;
 }) {
+  const {
+    items: slipItems,
+    activeId,
+    setActiveId,
+    stake,
+    setStake,
+    removeItem,
+    totalOdds,
+    payoutPreview,
+    clearAfterParlay,
+  } = useBetSlip();
+
   const selectedKeys = useMemo(() => new Set(slipItems.map((i) => i.matchKey)), [slipItems]);
   const activeSelection = useMemo(() => slipItems.find((i) => i.id === activeId)?.selection ?? null, [activeId, slipItems]);
   const openCount = useMemo(() => azuroOrders.filter(isAzuroBetOpen).length, [azuroOrders]);
+  const allLegsValid = useMemo(
+    () => slipItems.length > 0 && slipItems.every((i) => isValidAzuroSlipSelection(i.selection)),
+    [slipItems],
+  );
 
   function onToggleExpand(id: number) {
     const next = expandedId === id ? null : id;
@@ -583,8 +462,13 @@ function SlipTabContent({
     if (next != null) loadMarketsForMatch(next);
   }
 
+  function onClearActive() {
+    if (!activeId) return;
+    removeItem(activeId);
+  }
+
   return (
-    <div className="pb-[min(52vh,480px)]">
+    <div className="space-y-4">
       <div className="rounded-2xl border border-zinc-700/70 bg-zinc-900/55 p-4 backdrop-blur-xl">
         <p className="mb-3 text-xs uppercase tracking-[0.18em] text-zinc-400">Live matches & markets</p>
         <LiveMatchMarketsSection
@@ -600,7 +484,7 @@ function SlipTabContent({
         />
       </div>
 
-      <div className="mt-4 rounded-2xl border border-zinc-700/70 bg-zinc-900/55 p-4 backdrop-blur-xl">
+      <div className="rounded-2xl border border-zinc-700/70 bg-zinc-900/55 p-4 backdrop-blur-xl">
         <div className="mb-3 flex items-center justify-between">
           <p className="text-xs uppercase tracking-[0.18em] text-zinc-400">Active bets</p>
           <span className="text-xs text-emerald-300">{openCount} open</span>
@@ -608,24 +492,125 @@ function SlipTabContent({
         <ActiveBets orders={azuroOrders} liveMatches={liveMatches} />
       </div>
 
-      <div className="fixed bottom-28 left-1/2 z-30 w-[calc(100%-1.5rem)] max-w-md -translate-x-1/2 rounded-2xl border border-emerald-500/30 bg-zinc-950/95 p-3 shadow-[0_-8px_40px_rgba(0,0,0,0.55)] backdrop-blur-xl">
-        <p className="mb-2 text-center text-[10px] font-semibold uppercase tracking-[0.2em] text-emerald-400/90">Bet slip</p>
-        <SlipBuilder
-          items={slipItems}
-          activeId={activeId}
-          onActivate={onActivate}
-          onRemove={onRemove}
-          stake={stake}
-          onStakeChange={onStakeChange}
-        />
-        <div className="mt-3 max-h-[40vh] overflow-y-auto">
+      <div className="relative rounded-2xl border border-emerald-500/25 bg-zinc-950/90 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+        <div className="mb-3 flex items-center justify-between border-b border-zinc-800/80 pb-3">
+          <h2 className="text-sm font-semibold uppercase tracking-[0.14em] text-emerald-400/95">Bet slip</h2>
+          {slipItems.length > 0 ? (
+            <span className="text-[11px] text-zinc-500">
+              {slipItems.length} leg{slipItems.length === 1 ? "" : "s"}
+            </span>
+          ) : null}
+        </div>
+
+        {slipItems.length === 0 ? (
+          <p className="text-sm text-zinc-500">Tap a price, Quick, or add from Strategy to build your slip.</p>
+        ) : (
+          <>
+            <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Selections</p>
+            <div className="max-h-52 space-y-2 overflow-y-auto pr-0.5">
+            <AnimatePresence initial={false}>
+              {slipItems.map((item) => {
+                const active = item.id === activeId;
+                return (
+                  <motion.div
+                    key={item.id}
+                    layout
+                    initial={{ opacity: 0, y: 6 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -6 }}
+                    className={`rounded-xl border p-2.5 transition ${
+                      active
+                        ? "border-emerald-400/55 bg-emerald-500/10 shadow-[0_0_16px_rgba(0,255,163,0.12)]"
+                        : "border-zinc-700/70 bg-zinc-900/65"
+                    }`}
+                  >
+                    <button type="button" onClick={() => setActiveId(item.id)} className="w-full text-left">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="truncate text-xs font-semibold text-zinc-100">{item.selection.gameTitle}</p>
+                          <p className="mt-0.5 truncate text-[10px] text-zinc-500">{item.selection.marketTitle}</p>
+                          <p className="mt-0.5 truncate text-[10px] text-zinc-400">{item.selection.outcomeTitle}</p>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-1.5">
+                          <span className="rounded-lg border border-emerald-500/35 bg-emerald-500/10 px-1.5 py-0.5 text-[11px] font-semibold text-emerald-300">
+                            {item.selection.odds}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              removeItem(item.id);
+                            }}
+                            className="rounded-lg border border-zinc-600 p-1.5 text-zinc-300 transition hover:bg-zinc-800/80"
+                            aria-label="Remove bet"
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    </button>
+                  </motion.div>
+                );
+              })}
+            </AnimatePresence>
+            </div>
+          </>
+        )}
+
+        <div className={`mt-4 space-y-4 border-t border-zinc-800/80 pt-4 ${slipItems.length === 0 ? "opacity-50" : ""}`}>
+          <label className="block">
+            <span className="mb-1.5 block text-[10px] font-semibold uppercase tracking-[0.14em] text-zinc-400">Stake (bet token)</span>
+            <input
+              inputMode="decimal"
+              value={stake}
+              onChange={(e) => setStake(e.target.value)}
+              placeholder="0.00"
+              disabled={slipItems.length === 0}
+              className="h-11 w-full rounded-xl border border-zinc-700 bg-zinc-900/80 px-3 text-base font-medium text-zinc-100 outline-none transition focus:border-emerald-500/60 focus:ring-1 focus:ring-emerald-500/30 disabled:cursor-not-allowed"
+            />
+          </label>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div className="rounded-xl border border-zinc-700/80 bg-zinc-900/70 p-3">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">Acca odds</p>
+              <p className="mt-1 text-lg font-bold tabular-nums text-zinc-100">{slipItems.length ? `${totalOdds.toFixed(2)}x` : "—"}</p>
+            </div>
+            <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-emerald-200/90">Potential payout</p>
+              <p className="mt-1 text-lg font-bold tabular-nums text-emerald-200">
+                {payoutPreview != null ? `${payoutPreview.toFixed(4)} ${BET_TOKEN.symbol}` : "—"}
+              </p>
+            </div>
+          </div>
+
+          <p
+            key={payoutPreview ?? "none"}
+            className="text-center text-sm font-semibold text-emerald-200/95 transition-all duration-200"
+          >
+            {payoutPreview != null
+              ? `Potential payout: ${payoutPreview.toFixed(4)} ${BET_TOKEN.symbol}`
+              : slipItems.length > 0
+                ? "Enter a stake to see potential payout."
+                : "Add selections to calculate payout."}
+          </p>
+
+          {!allLegsValid && slipItems.length > 0 ? (
+            <p className="text-xs text-amber-300">One or more legs are missing Azuro data — remove them or pick on-chain markets.</p>
+          ) : null}
+        </div>
+
+        <div className="mt-4 border-t border-zinc-800/80 pt-4">
           <BetSlip
             selection={activeSelection}
             onClear={onClearActive}
             onPlaced={onPlaced}
             slipLegCount={slipItems.length}
             parlaySelections={slipItems.length >= 2 ? slipItems.map((i) => i.selection) : null}
-            onParlayComplete={onParlayComplete}
+            onParlayComplete={() => {
+              clearAfterParlay();
+              onAfterParlay();
+            }}
+            variant="embedded"
             className="border-0 bg-transparent p-0"
           />
         </div>
@@ -650,59 +635,18 @@ export function BetPage({
   recommendSelection,
 }: BetPageProps) {
   const [tab, setTab] = useState<BetTabKey>("slip");
-  const [stake, setStake] = useState("0");
-  const [slipItems, setSlipItems] = useState<SlipItem[]>([]);
-  const [activeId, setActiveId] = useState<string | null>(null);
   const [marketsByMatchId, setMarketsByMatchId] = useState<Record<number, MatchMarketsPayload>>({});
   const [loadingMarketId, setLoadingMarketId] = useState<number | null>(null);
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const { data: azuroOrders = [], refetch } = useAzuroBets();
+  const { addSelection, items: slipItems } = useBetSlip();
 
   useEffect(() => {
     const queued = drainSlipQueue();
-    if (queued.length === 0) return;
-    setSlipItems((prev) => {
-      const keys = new Set(prev.map((i) => i.matchKey));
-      const next = [...prev];
-      for (const selection of queued) {
-        if (!isValidAzuroSlipSelection(selection)) continue;
-        const mid = selection.matchId;
-        const match = mid != null ? liveMatches.find((m) => m.id === mid) : undefined;
-        const matchKey = match ? matchKeyFromLive(match) : `fixture:${mid ?? "x"}`;
-        if (keys.has(matchKey)) continue;
-        keys.add(matchKey);
-        next.unshift({
-          id: `${Date.now()}-${mid}-${selection.outcomeId}`,
-          matchKey,
-          selection,
-          addedAt: Date.now(),
-        });
-      }
-      return next;
-    });
-  }, [liveMatches]);
-
-  useEffect(() => {
-    function onAddSlip(ev: Event) {
-      const e = ev as CustomEvent<BetSlipSelection>;
-      const selection = e.detail;
-      if (!isValidAzuroSlipSelection(selection)) return;
-      const matchId = selection.matchId;
-      if (matchId == null) return;
-      const match = liveMatches.find((m) => m.id === matchId);
-      if (!match) return;
-      const matchKey = matchKeyFromLive(match);
-      const id = `${Date.now()}-${match.id}-${selection.outcomeId}`;
-      const newItem: SlipItem = { id, matchKey, selection, addedAt: Date.now() };
-      setSlipItems((prev) => {
-        if (prev.some((i) => i.matchKey === matchKey)) return prev;
-        return [newItem, ...prev];
-      });
-      setActiveId(id);
+    for (const selection of queued) {
+      addSelection(selection);
     }
-    window.addEventListener("lambor:add-slip", onAddSlip);
-    return () => window.removeEventListener("lambor:add-slip", onAddSlip);
-  }, [liveMatches]);
+  }, [liveMatches, addSelection]);
 
   async function loadMarketsForMatch(id: number) {
     if (marketsByMatchId[id]) return;
@@ -720,28 +664,8 @@ export function BetPage({
   function addFromQuick(match: LiveMatch) {
     const selection = recommendSelection(match);
     if (!selection || !isValidAzuroSlipSelection(selection)) return;
-
-    const matchKey = matchKeyFromLive(match);
-    const exists = slipItems.some((i) => i.matchKey === matchKey);
-    if (exists) return;
-
-    const id = `${Date.now()}-${match.id}`;
-    const newItem: SlipItem = { id, matchKey, selection, addedAt: Date.now() };
-    setSlipItems((prev) => [newItem, ...prev]);
-    setActiveId(id);
-  }
-
-  function removeItem(id: string) {
-    setSlipItems((prev) => {
-      const next = prev.filter((i) => i.id !== id);
-      setActiveId((a) => (a === id ? next[0]?.id ?? null : a));
-      return next;
-    });
-  }
-
-  function clearActive() {
-    if (!activeId) return;
-    removeItem(activeId);
+    if (slipItems.some((i) => i.matchKey === matchKeyFromLive(match))) return;
+    addSelection(selection);
   }
 
   return (
@@ -761,9 +685,6 @@ export function BetPage({
               liveMatches={liveMatches}
               liveLoading={liveLoading}
               liveError={liveError}
-              slipItems={slipItems}
-              activeId={activeId}
-              stake={stake}
               azuroOrders={azuroOrders}
               marketsByMatchId={marketsByMatchId}
               loadingMarketId={loadingMarketId}
@@ -771,15 +692,8 @@ export function BetPage({
               setExpandedId={setExpandedId}
               loadMarketsForMatch={loadMarketsForMatch}
               onQuickBet={addFromQuick}
-              onActivate={setActiveId}
-              onRemove={removeItem}
-              onStakeChange={setStake}
-              onClearActive={clearActive}
               onPlaced={() => void refetch()}
-              onParlayComplete={() => {
-                setSlipItems([]);
-                setActiveId(null);
-              }}
+              onAfterParlay={() => void refetch()}
             />
           </motion.div>
         ) : (
