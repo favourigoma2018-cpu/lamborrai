@@ -1,3 +1,5 @@
+import { ConditionState } from "@azuro-org/toolkit";
+
 import type { GameCondition } from "@/lib/azuro/fetch-conditions";
 import type {
   LamborMarketGroup,
@@ -121,6 +123,8 @@ export function buildMatchMarkets(
 ): MatchMarketsPayload {
   const groups: LamborMarketGroup[] = [];
   for (const condition of conditions ?? []) {
+    if (condition.state !== ConditionState.Active) continue;
+
     const opts = mapOutcomesToOptions(condition);
     if (opts.length === 0) continue;
 

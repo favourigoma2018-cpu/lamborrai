@@ -9,12 +9,12 @@ import type { Address } from "viem";
 
 import { AZURO_CHAIN_ID } from "@/config/chain";
 
+import { assertAzuroConditionsActive } from "./assert-conditions-active";
 import { parseBetTokenAmountRaw } from "./bet-amount";
 import { minOddsHumanToEip712 } from "./min-odds-for-eip712";
 import { azuroOrderNonce } from "./order-nonce";
+import { clientDataPaymasterStake } from "./paymaster-client-data";
 import type { SlipSelection } from "./prepareBet";
-
-const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as Address;
 
 export type PreparedComboBet = {
   typedData: ReturnType<typeof getComboBetTypedData>;
@@ -40,6 +40,11 @@ export async function prepareComboBetInteraction({
 
   const [fee] = await Promise.all([getBetFee(AZURO_CHAIN_ID)]);
 
+  await assertAzuroConditionsActive(
+    AZURO_CHAIN_ID,
+    legs.map((l) => l.conditionId),
+  );
+
   const minOddsHuman = calcMinOdds({ odds, slippage: 5 });
   const minOdds = minOddsHumanToEip712(minOddsHuman);
   const amount = parseBetTokenAmountRaw(totalStakeHuman);
@@ -50,17 +55,14 @@ export async function prepareComboBetInteraction({
     outcomeId: l.outcomeId,
   }));
 
-  const clientData = {
-    attention: "Lambor combo",
-    affiliate: ZERO_ADDRESS,
+  const clientData = clientDataPaymasterStake({
+    bettor: account,
     core: coreAddress,
-    expiresAt: Math.floor(Date.now() / 1000) + 60 * 10,
     chainId: AZURO_CHAIN_ID,
+    expiresAt: Math.floor(Date.now() / 1000) + 60 * 10,
     relayerFeeAmount: fee.relayerFeeAmount,
-    isBetSponsored: false,
-    isFeeSponsored: false,
-    isSponsoredBetReturnable: false,
-  } as const;
+    attention: "Lambor combo",
+  });
 
   const relayBody: Omit<CreateComboBetParams, "signature"> = {
     account,

@@ -356,7 +356,7 @@ export function BetSlip({
 
           <div className="rounded-md border border-zinc-800 bg-zinc-950/50 px-3 py-2 text-sm">
             <p className="flex items-center justify-between text-zinc-400">
-              <span>PayMaster balance ({betTokenSymbol})</span>
+              <span>Lambor balance — PayMaster ({betTokenSymbol})</span>
               <span className="font-semibold text-zinc-200">
                 {balanceLoading ? "…" : effectiveStakeBalance.toFixed(4)}
               </span>
@@ -380,7 +380,7 @@ export function BetSlip({
 
           {insufficientStake ? (
             <p className="text-xs text-red-300">
-              Stake exceeds your PayMaster free balance. Deposit USDT to PayMaster on the Wall tab first.
+              Stake exceeds your Lambor (PayMaster) balance. Deposit USDT on the Wall tab — bets use that vault, not wallet USDT.
             </p>
           ) : null}
           {!walletOnPolygon && address ? (

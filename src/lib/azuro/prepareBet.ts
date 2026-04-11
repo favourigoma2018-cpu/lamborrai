@@ -9,11 +9,11 @@ import type { Address } from "viem";
 
 import { AZURO_CHAIN_ID } from "@/config/chain";
 
+import { assertAzuroConditionsActive } from "./assert-conditions-active";
 import { parseBetTokenAmountRaw } from "./bet-amount";
 import { minOddsHumanToEip712 } from "./min-odds-for-eip712";
 import { azuroOrderNonce } from "./order-nonce";
-
-const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as Address;
+import { clientDataPaymasterStake } from "./paymaster-client-data";
 
 export type SlipSelection = {
   conditionId: string;
@@ -56,6 +56,8 @@ export async function prepareBet(args: PrepareBetArgs): Promise<PreparedOrdinary
     getBetFee(AZURO_CHAIN_ID),
   ]);
 
+  await assertAzuroConditionsActive(AZURO_CHAIN_ID, [selection.conditionId]);
+
   const minOddsHuman = calcMinOdds({ odds: oddsNum, slippage: 5 });
   const minOdds = minOddsHumanToEip712(minOddsHuman);
   const amountRaw = parseBetTokenAmountRaw(amount);
@@ -69,17 +71,14 @@ export async function prepareBet(args: PrepareBetArgs): Promise<PreparedOrdinary
     nonce,
   } as const;
 
-  const clientData = {
-    attention: "Lambor",
-    affiliate: ZERO_ADDRESS,
+  const clientData = clientDataPaymasterStake({
+    bettor: account,
     core: coreAddress,
-    expiresAt: Math.floor(Date.now() / 1000) + 60 * 10,
     chainId: AZURO_CHAIN_ID,
+    expiresAt: Math.floor(Date.now() / 1000) + 60 * 10,
     relayerFeeAmount: fee.relayerFeeAmount,
-    isBetSponsored: false,
-    isFeeSponsored: false,
-    isSponsoredBetReturnable: false,
-  } as const;
+    attention: "Lambor",
+  });
 
   const typedData = getBetTypedData({
     account,
