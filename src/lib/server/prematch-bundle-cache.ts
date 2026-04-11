@@ -31,7 +31,8 @@ export async function getPrematchBundleCached(): Promise<PrematchBundle> {
   if (g.__lamborPrematchInflight) return g.__lamborPrematchInflight;
 
   g.__lamborPrematchInflight = (async () => {
-    const payload = await fetchPrematchGames({ page: 1, perPage: 24 });
+    /** Larger pool improves linking live API-Football fixtures to Azuro prematch rows. */
+    const payload = await fetchPrematchGames({ page: 1, perPage: 80 });
     const conditionsByGameId = await fetchConditionsByGameIds(payload.games.map((game) => game.gameId));
     const bundle: PrematchBundle = {
       games: payload.games,

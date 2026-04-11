@@ -7,7 +7,9 @@ export type LamborMarketKind =
   | "over_under"
   | "btts"
   | "half_time_over_under"
-  | "half_time_winner";
+  | "half_time_winner"
+  /** Azuro condition we could not map to a canonical kind — still selectable on-chain. */
+  | "other_azuro";
 
 export type MarketPeriod = "full" | "1st_half" | "2nd_half";
 
@@ -28,6 +30,8 @@ export type LamborMarketGroup = {
   /** For totals / lines. */
   line?: number;
   period?: MarketPeriod;
+  /** Original Azuro condition title (shown for `other_azuro` and as subtitle elsewhere). */
+  conditionTitle?: string | null;
   options: LamborMarketOption[];
 };
 

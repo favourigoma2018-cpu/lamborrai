@@ -4,6 +4,7 @@ import type { Address } from "viem";
 import { AZURO_CHAIN_ID } from "@/config/chain";
 
 import { parseBetTokenAmountRaw } from "./bet-amount";
+import { azuroOrderNonce } from "./order-nonce";
 import type { SlipSelection } from "./prepare-bet";
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as Address;
@@ -39,7 +40,7 @@ export async function prepareComboBetInteraction({
 
   const minOdds = calcMinOdds({ odds, slippage: 5 });
   const amount = parseBetTokenAmountRaw(totalStakeHuman);
-  const nonce = `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+  const nonce = azuroOrderNonce();
 
   const typedData = getComboBetTypedData({
     account,

@@ -9,13 +9,57 @@ import type { LiveMatch } from "@/types/live-matches";
 
 function classifyCondition(title: string | null): LamborMarketKind | null {
   if (!title) return null;
-  const t = title.toLowerCase();
+  const t = title.toLowerCase().replace(/\s+/g, " ").trim();
+
   if (t.includes("double chance")) return "double_chance";
-  if (t.includes("both teams") || t.includes("btts") || t.includes("gg / ng")) return "btts";
-  if ((t.includes("1st half") || t.includes("first half")) && (t.includes("total") || t.includes("over"))) return "half_time_over_under";
-  if ((t.includes("1st half") || t.includes("first half")) && (t.includes("winner") || t.includes("1x2"))) return "half_time_winner";
-  if (t.includes("total") || t.includes("over / under") || t.includes("o/u") || t.includes("goals over")) return "over_under";
-  if (t.includes("1x2") || t.includes("match winner") || t.includes("full time") || t.includes("winner")) return "match_winner";
+  if (t.includes("both teams") || t.includes("btts") || t.includes("gg / ng") || t.includes("gg/ng")) return "btts";
+
+  const isFirstHalf =
+    t.includes("1st half") ||
+    t.includes("first half") ||
+    t.includes("1st-half") ||
+    t.includes("half time 1") ||
+    /\bht\b/.test(t) ||
+    t.includes("half-time");
+  if (isFirstHalf && (t.includes("total") || t.includes("over") || t.includes("under") || t.includes("o/u"))) {
+    return "half_time_over_under";
+  }
+  if (isFirstHalf && (t.includes("winner") || t.includes("1x2") || t.includes("match result"))) {
+    return "half_time_winner";
+  }
+
+  if (
+    t.includes("total") ||
+    t.includes("over / under") ||
+    t.includes("over/under") ||
+    t.includes("o/u") ||
+    t.includes("goals over") ||
+    t.includes("asian total") ||
+    t.includes("goal line") ||
+    (t.includes("over") && t.includes("under")) ||
+    /\bgoals?\b.*\b(under|over)\b/.test(t) ||
+    /\b(under|over)\b.*\bgoals?\b/.test(t)
+  ) {
+    return "over_under";
+  }
+
+  if (
+    t.includes("1x2") ||
+    t.includes("match winner") ||
+    t.includes("full time") ||
+    t.includes("fulltime") ||
+    t.includes("regular time") ||
+    t.includes("moneyline") ||
+    t.includes("match result") ||
+    t.includes("three way") ||
+    t.includes("home/draw/away") ||
+    t.includes("home / draw / away") ||
+    t.includes("winner (incl.") ||
+    (t.includes("winner") && !isFirstHalf)
+  ) {
+    return "match_winner";
+  }
+
   return null;
 }
 
@@ -32,7 +76,11 @@ function mapOutcomesToOptions(condition: GameCondition): LamborMarketOption[] {
     const label = o.title?.trim() || `Outcome ${idx + 1}`;
     return {
       label,
-      odds: o.odds,
+      odds: (() => {
+        const raw = o.odds as string | number | undefined;
+        if (typeof raw === "number" && Number.isFinite(raw)) return raw.toFixed(2);
+        return String(raw ?? "");
+      })(),
       marketId: condition.conditionId,
       outcomeId: o.outcomeId,
       executable: true,
@@ -41,6 +89,10 @@ function mapOutcomesToOptions(condition: GameCondition): LamborMarketOption[] {
 }
 
 function mergeOrAppend(groups: LamborMarketGroup[], next: LamborMarketGroup) {
+  if (next.type === "other_azuro") {
+    groups.push({ ...next, options: dedupeOptions(next.options) });
+    return;
+  }
   const same = groups.find((g) => g.type === next.type && g.line === next.line);
   if (same && next.options.length) {
     same.options = dedupeOptions([...same.options, ...next.options]);
@@ -69,12 +121,28 @@ export function buildMatchMarkets(
 ): MatchMarketsPayload {
   const groups: LamborMarketGroup[] = [];
   for (const condition of conditions ?? []) {
-    const kind = classifyCondition(condition.title);
-    if (!kind) continue;
-    const line = kind === "over_under" || kind === "half_time_over_under" ? parseLineFromTitle(condition.title) : undefined;
     const opts = mapOutcomesToOptions(condition);
     if (opts.length === 0) continue;
-    mergeOrAppend(groups, { type: kind, line, period: kind === "half_time_over_under" ? "1st_half" : "full", options: opts });
+
+    let kind = classifyCondition(condition.title);
+    if (!kind) {
+      kind = "other_azuro";
+    }
+
+    const line =
+      kind === "over_under" || kind === "half_time_over_under" ? parseLineFromTitle(condition.title) : undefined;
+    const period =
+      kind === "half_time_over_under" || kind === "half_time_winner"
+        ? ("1st_half" as const)
+        : ("full" as const);
+
+    mergeOrAppend(groups, {
+      type: kind,
+      line,
+      period,
+      conditionTitle: condition.title,
+      options: opts,
+    });
   }
 
   return {

@@ -4,6 +4,7 @@ import type { Address } from "viem";
 import { AZURO_CHAIN_ID } from "@/config/chain";
 
 import { parseBetTokenAmountRaw } from "./bet-amount";
+import { azuroOrderNonce } from "./order-nonce";
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as Address;
 
@@ -58,7 +59,7 @@ export async function prepareBetInteraction({
 
   const minOdds = calcMinOdds({ odds: oddsNum, slippage: 5 });
   const amountRaw = parseBetTokenAmountRaw(amount);
-  const nonce = `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+  const nonce = azuroOrderNonce();
 
   const typedData = getBetTypedData({
     account,

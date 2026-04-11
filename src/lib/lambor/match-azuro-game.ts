@@ -62,6 +62,14 @@ export function findBestAzuroGameForLive(match: LiveMatch, games: GameData[]): G
     .sort((a, b) => b.score - a.score);
 
   const best = ranked[0];
-  if (!best || best.score <= 0) return null;
-  return best.game;
+  if (!best) return null;
+  if (best.score > 0) return best.game;
+
+  /** Live vs prematch titles often diverge — fall back to team-name overlap when total score is 0. */
+  const teamScore = (game: GameData) => scoreGameMatch(game.title, match.homeTeam, match.awayTeam);
+  const strongTeam = ranked.find(({ game }) => teamScore(game) >= 2);
+  if (strongTeam) return strongTeam.game;
+  if (teamScore(best.game) >= 1) return best.game;
+
+  return null;
 }

@@ -7,6 +7,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useBetSlip } from "@/contexts/bet-slip-context";
 import { isValidAzuroSlipSelection } from "@/lib/azuro/slip-selection-guards";
 import { matchKeyFromLive } from "@/lib/lambor/match-key";
+import { buildMatchMarkets } from "@/lib/lambor/markets/build-match-markets";
 import { drainSlipQueue } from "@/lib/lambor/slip-queue";
 
 import type { BetSlipSelection } from "@/components/bets/bet-slip";
@@ -54,6 +55,10 @@ function formatShortDate(iso: string) {
 }
 
 function formatMarketGroupTitle(g: LamborMarketGroup): string {
+  if (g.type === "other_azuro") {
+    const t = (g.conditionTitle ?? "").trim();
+    return t || "Market";
+  }
   const label = g.type.replace(/_/g, " ");
   if (g.line != null) return `${label} • ${g.line}`;
   return label;
@@ -244,7 +249,7 @@ function LiveMatchMarketsSection({
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -8 }}
               transition={{ duration: 0.2 }}
-              className="overflow-hidden rounded-2xl border border-emerald-500/20 bg-zinc-900/60 shadow-[0_0_18px_rgba(0,255,163,0.06)]"
+              className="rounded-2xl border border-emerald-500/20 bg-zinc-900/60 shadow-[0_0_18px_rgba(0,255,163,0.06)]"
             >
               <div className="flex items-center justify-between gap-2 px-3 py-3">
                 <div className="min-w-0">
@@ -284,48 +289,41 @@ function LiveMatchMarketsSection({
                 </div>
               </div>
 
-              <AnimatePresence initial={false}>
-                {expanded ? (
-                  <motion.div
-                    initial={{ height: 0, opacity: 0 }}
-                    animate={{ height: "auto", opacity: 1 }}
-                    exit={{ height: 0, opacity: 0 }}
-                    className="border-t border-zinc-800/80 bg-zinc-950/40 px-3 pb-3 pt-2"
-                  >
-                    {loadingMarketId === match.id && !payload ? (
-                      <p className="text-xs text-zinc-500">Loading markets…</p>
-                    ) : null}
-                    {payload ? (
-                      <div className="space-y-3">
-                        {payload.azuroGameId ? (
-                          <p className="text-[10px] text-zinc-500">
-                            Linked Azuro game <span className="text-zinc-400">{payload.azuroGameId}</span> — only prices backed by Azuro conditions are shown.
-                          </p>
-                        ) : (
-                          <p className="text-[10px] text-amber-300/90">
-                            No Azuro game linked for this fixture yet — on-chain betting is unavailable until the feed matches this match.
-                          </p>
-                        )}
-                        {payload.markets.length === 0 ? (
-                          <p className="text-xs text-zinc-500">No Azuro conditions matched the supported market types for this game.</p>
-                        ) : (
-                          payload.markets.map((group) => (
-                            <MarketGroupBlock
-                              key={`${group.type}-${group.line ?? "x"}`}
-                              group={group}
-                              match={match}
-                              hints={hints}
-                              azuroGameId={payload.azuroGameId}
-                            />
-                          ))
-                        )}
-                      </div>
-                    ) : loadingMarketId !== match.id ? (
-                      <p className="text-xs text-zinc-500">Open markets to load prices.</p>
-                    ) : null}
-                  </motion.div>
-                ) : null}
-              </AnimatePresence>
+              {expanded ? (
+                <div className="border-t border-zinc-800/80 bg-zinc-950/40 px-3 pb-3 pt-2">
+                  {loadingMarketId === match.id && !payload ? (
+                    <p className="text-xs text-zinc-500">Loading markets…</p>
+                  ) : null}
+                  {payload ? (
+                    <div className="space-y-3">
+                      {payload.azuroGameId ? (
+                        <p className="text-[10px] text-zinc-500">
+                          Linked Azuro game <span className="text-zinc-400">{payload.azuroGameId}</span> — only prices backed by Azuro conditions are shown.
+                        </p>
+                      ) : (
+                        <p className="text-[10px] text-amber-300/90">
+                          No Azuro game linked for this fixture yet — on-chain betting is unavailable until the feed matches this match.
+                        </p>
+                      )}
+                      {payload.markets.length === 0 ? (
+                        <p className="text-xs text-zinc-500">No Azuro conditions with prices for this game.</p>
+                      ) : (
+                        payload.markets.map((group, gi) => (
+                          <MarketGroupBlock
+                            key={`${group.type}-${group.line ?? "x"}-${group.conditionTitle ?? gi}`}
+                            group={group}
+                            match={match}
+                            hints={hints}
+                            azuroGameId={payload.azuroGameId}
+                          />
+                        ))
+                      )}
+                    </div>
+                  ) : loadingMarketId !== match.id ? (
+                    <p className="text-xs text-zinc-500">Open markets to load prices.</p>
+                  ) : null}
+                </div>
+              ) : null}
             </motion.div>
           );
         })}
@@ -650,10 +648,16 @@ export function BetPage({
 
   async function loadMarketsForMatch(id: number) {
     if (marketsByMatchId[id]) return;
+    const match = liveMatches.find((m) => m.id === id);
+    if (!match) return;
+
     setLoadingMarketId(id);
     try {
       const res = await fetch(`/api/match/${id}`);
-      if (!res.ok) return;
+      if (!res.ok) {
+        setMarketsByMatchId((prev) => ({ ...prev, [id]: buildMatchMarkets(match, undefined, []) }));
+        return;
+      }
       const data = (await res.json()) as MatchMarketsPayload;
       setMarketsByMatchId((prev) => ({ ...prev, [id]: data }));
     } finally {
