@@ -6,6 +6,7 @@ import type { Address } from "viem";
 import { useAccount, useChainId, useSignTypedData, useSwitchChain } from "wagmi";
 
 import { AzuroBetsList } from "@/components/bets/azuro-bets-list";
+import { BetExecutionButton } from "@/components/bets/BetExecutionButton";
 import { useBetSlipOptional } from "@/contexts/bet-slip-context";
 import { useLamborWallet } from "@/contexts/lambor-wallet-context";
 import { AZURO_CHAIN_ID, targetChain } from "@/config/chain";
@@ -14,14 +15,11 @@ import { formatUnits } from "ethers";
 import { usePaymasterBalances } from "@/hooks/use-paymaster-balances";
 import { useAzuroBets, useInvalidateAzuroBets } from "@/hooks/use-azuro-bets";
 import { useAzuroNewBetListener } from "@/hooks/use-azuro-new-bet-event";
-import {
-  prepareBetInteraction,
-  type PreparedBetInteraction,
-  type SlipSelection,
-} from "@/lib/azuro/prepare-bet";
+import { placeComboBet, placeOrdinaryBet } from "@/lib/azuro/placeBet";
+import { prepareBet, type PreparedOrdinaryBet, type SlipSelection } from "@/lib/azuro/prepareBet";
 import { prepareComboBetInteraction } from "@/lib/azuro/prepare-combo-bet";
 import { azuroSlipSelectionInvalidReason, isValidAzuroSlipSelection } from "@/lib/azuro/slip-selection-guards";
-import { submitComboBetOrder, submitOrdinaryBetOrder } from "@/lib/azuro/submit-azuro-order";
+import { signBet } from "@/lib/azuro/signBet";
 import { ensurePolygonWallet } from "@/lib/wallet/ensure-polygon";
 
 export type BetSlipSelection = SlipSelection & {
@@ -99,7 +97,7 @@ export function BetSlip({
   const [awaitingSignature, setAwaitingSignature] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
-  const [prepared, setPrepared] = useState<PreparedBetInteraction | null>(null);
+  const [prepared, setPrepared] = useState<PreparedOrdinaryBet | null>(null);
   const [parlayRunning, setParlayRunning] = useState(false);
   const { signTypedDataAsync } = useSignTypedData();
 
@@ -162,7 +160,7 @@ export function BetSlip({
     setIsPreparing(true);
     try {
       await ensureAzuroChain();
-      const result = await prepareBetInteraction({
+      const result = await prepareBet({
         account: address,
         selection,
         amount,
@@ -191,16 +189,10 @@ export function BetSlip({
       }
 
       setAwaitingSignature(true);
-      const signature = await signTypedDataAsync(prepared.typedData);
+      const signature = await signBet(prepared.typedData, signTypedDataAsync);
       setAwaitingSignature(false);
 
-      const result = await submitOrdinaryBetOrder({
-        account: address,
-        signature,
-        coreAddress,
-        relayerFeeAmount: prepared.fee.relayerFeeAmount,
-        ...prepared.submitPayload,
-      });
+      const result = await placeOrdinaryBet(prepared.relayBody, signature);
 
       if (result.state === BetOrderState.Rejected || result.errorMessage || result.error) {
         throw new Error(result.errorMessage ?? result.error ?? "Order was rejected.");
@@ -260,16 +252,10 @@ export function BetSlip({
         coreAddress,
       });
       setAwaitingSignature(true);
-      const signature = await signTypedDataAsync(prep.typedData);
+      const signature = await signBet(prep.typedData, signTypedDataAsync);
       setAwaitingSignature(false);
 
-      const comboResult = await submitComboBetOrder({
-        account: address,
-        signature,
-        coreAddress,
-        relayerFeeAmount: prep.fee.relayerFeeAmount,
-        ...prep.submitPayload,
-      });
+      const comboResult = await placeComboBet(prep.relayBody, signature);
       if (comboResult.state === BetOrderState.Rejected || comboResult.errorMessage || comboResult.error) {
         throw new Error(comboResult.errorMessage ?? comboResult.error ?? "Combo order was rejected.");
       }
@@ -401,42 +387,25 @@ export function BetSlip({
             <p className="text-xs text-amber-300">Switch MetaMask to Polygon to bet.</p>
           ) : null}
 
-          <div className={`flex flex-col gap-2 ${isEmbedded ? "" : "sm:flex-row sm:items-stretch"}`}>
-            <button
-              type="button"
-              onClick={onPrepareTransaction}
-              disabled={!canPrepare || isPreparing}
-              className={`w-full rounded-xl border border-zinc-600 bg-zinc-900/80 px-4 py-2.5 text-sm font-semibold text-zinc-200 transition hover:border-zinc-500 hover:bg-zinc-800/80 disabled:cursor-not-allowed disabled:opacity-50 ${isEmbedded ? "order-1" : ""}`}
-            >
-              {isPreparing ? "Preparing…" : "Prepare transaction"}
-            </button>
-
-            <button
-              type="button"
-              onClick={onPlaceBet}
-              disabled={!canPlaceBet || parlayRunning}
-              className={`w-full rounded-xl bg-emerald-500 px-4 py-3.5 text-sm font-bold text-zinc-950 shadow-[0_0_28px_rgba(0,255,163,0.35)] transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-45 ${isEmbedded ? "order-2 min-h-[48px]" : ""}`}
-            >
-              {awaitingSignature
-                ? "Awaiting signature…"
-                : txState === "pending" && !parlayRunning
-                  ? "Placing…"
-                  : "Sign & place bet"}
-            </button>
-          </div>
-
-          {parlayEligible ? (
-            <button
-              type="button"
-              onClick={() => void onPlaceParlay()}
-              disabled={parlayRunning}
-              className="w-full rounded-xl border-2 border-emerald-400/60 bg-emerald-600/95 px-4 py-3.5 text-sm font-bold text-white shadow-[0_0_24px_rgba(0,255,163,0.2)] transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {parlayRunning
+          <BetExecutionButton
+            isEmbedded={isEmbedded}
+            canPrepare={canPrepare}
+            canPlace={canPlaceBet}
+            isPreparing={isPreparing}
+            awaitingSignature={awaitingSignature}
+            isPlacing={txState === "pending"}
+            parlayRunning={parlayRunning}
+            onPrepare={() => void onPrepareTransaction()}
+            onPlace={() => void onPlaceBet()}
+            showCombo={parlayEligible}
+            comboDisabled={parlayRunning}
+            comboLabel={
+              parlayRunning
                 ? `Placing combo… (${parlayLegs.length} legs)`
-                : `Sign & place combo (${parlayLegs.length} legs)`}
-            </button>
-          ) : null}
+                : `Sign & place combo (${parlayLegs.length} legs)`
+            }
+            onPlaceCombo={() => void onPlaceParlay()}
+          />
 
           {!chainOk && address ? (
             <p className="text-[11px] text-amber-300">

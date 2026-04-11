@@ -4,7 +4,7 @@ import { NextResponse } from "next/server";
 export const runtime = "nodejs";
 
 function isComboBody(body: Record<string, unknown>): body is CreateComboBetParams {
-  return Array.isArray(body.bets) && body.bets.length >= 2;
+  return Array.isArray(body.bets) && body.bets.length >= 2 && Boolean(body.signature);
 }
 
 function isOrdinaryBody(body: Record<string, unknown>): body is CreateBetParams {
@@ -12,9 +12,8 @@ function isOrdinaryBody(body: Record<string, unknown>): body is CreateBetParams 
 }
 
 /**
- * Relays signed orders to Azuro’s API (same as client `createBet` / `createComboBet`).
- * Optional server-side hooks (e.g. oracle co-signing) can be added here when keys and
- * protocol details are configured — the relayer still settles on-chain.
+ * Relays signed orders to Azuro’s relayer API (`createBet` / `createComboBet`).
+ * Request body must match what the wallet signed (especially `clientData`).
  */
 export async function POST(request: Request) {
   let body: Record<string, unknown>;
@@ -38,7 +37,7 @@ export async function POST(request: Request) {
       return NextResponse.json(result);
     }
     return NextResponse.json(
-      { error: "Expected ordinary bet (account, signature, bet, clientData) or combo (bets[], …)." },
+      { error: "Expected ordinary bet (account, signature, bet, clientData) or signed combo payload." },
       { status: 400 },
     );
   } catch (e) {

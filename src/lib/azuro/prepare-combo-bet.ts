@@ -1,23 +1,24 @@
-import { calcMinOdds, getBetFee, getComboBetTypedData } from "@azuro-org/toolkit";
+import {
+  calcMinOdds,
+  getBetFee,
+  getComboBetTypedData,
+  type CreateComboBetParams,
+  type GetComboBetTypedDataParams,
+} from "@azuro-org/toolkit";
 import type { Address } from "viem";
 
 import { AZURO_CHAIN_ID } from "@/config/chain";
 
 import { parseBetTokenAmountRaw } from "./bet-amount";
 import { azuroOrderNonce } from "./order-nonce";
-import type { SlipSelection } from "./prepare-bet";
+import type { SlipSelection } from "./prepareBet";
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as Address;
 
 export type PreparedComboBet = {
   typedData: ReturnType<typeof getComboBetTypedData>;
   fee: Awaited<ReturnType<typeof getBetFee>>;
-  submitPayload: {
-    bets: { conditionId: string; outcomeId: string }[];
-    minOdds: string;
-    amount: string;
-    nonce: string;
-  };
+  relayBody: Omit<CreateComboBetParams, "signature">;
 };
 
 export async function prepareComboBetInteraction({
@@ -42,36 +43,37 @@ export async function prepareComboBetInteraction({
   const amount = parseBetTokenAmountRaw(totalStakeHuman);
   const nonce = azuroOrderNonce();
 
-  const typedData = getComboBetTypedData({
+  const bets = legs.map((l) => ({
+    conditionId: l.conditionId,
+    outcomeId: l.outcomeId,
+  }));
+
+  const clientData = {
+    attention: "Lambor combo",
+    affiliate: ZERO_ADDRESS,
+    core: coreAddress,
+    expiresAt: Math.floor(Date.now() / 1000) + 60 * 10,
+    chainId: AZURO_CHAIN_ID,
+    relayerFeeAmount: fee.relayerFeeAmount,
+    isBetSponsored: false,
+    isFeeSponsored: false,
+    isSponsoredBetReturnable: false,
+  } as const;
+
+  const relayBody: Omit<CreateComboBetParams, "signature"> = {
     account,
-    clientData: {
-      attention: "Lambor combo",
-      affiliate: ZERO_ADDRESS,
-      core: coreAddress,
-      expiresAt: Math.floor(Date.now() / 1000) + 60 * 10,
-      chainId: AZURO_CHAIN_ID,
-      relayerFeeAmount: fee.relayerFeeAmount,
-      isBetSponsored: false,
-      isFeeSponsored: false,
-      isSponsoredBetReturnable: false,
-    },
-    bets: legs.map((l) => ({
-      conditionId: l.conditionId,
-      outcomeId: l.outcomeId,
-    })),
+    clientData,
+    bets,
     amount,
     minOdds,
     nonce,
-  });
+  };
+
+  const typedData = getComboBetTypedData(relayBody as GetComboBetTypedDataParams);
 
   return {
     typedData,
     fee,
-    submitPayload: {
-      bets: legs.map((l) => ({ conditionId: l.conditionId, outcomeId: l.outcomeId })),
-      minOdds,
-      amount,
-      nonce,
-    },
+    relayBody,
   };
 }
