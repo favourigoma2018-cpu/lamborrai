@@ -4,6 +4,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { ChevronDown, ChevronUp, Sparkles, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
+import { isValidAzuroSlipSelection } from "@/lib/azuro/slip-selection-guards";
 import { drainSlipQueue } from "@/lib/lambor/slip-queue";
 
 import type { BetSlipSelection } from "@/components/bets/bet-slip";
@@ -103,10 +104,12 @@ function MarketGroupBlock({
   group,
   match,
   hints,
+  azuroGameId,
 }: {
   group: LamborMarketGroup;
   match: LiveMatch;
   hints: ReturnType<typeof hintsForStrategy>;
+  azuroGameId?: string;
 }) {
   return (
     <div className="rounded-xl border border-zinc-700/60 bg-zinc-950/50 p-3">
@@ -121,6 +124,7 @@ function MarketGroupBlock({
               group={group}
               match={match}
               recommended={recommended}
+              azuroGameId={azuroGameId}
             />
           );
         })}
@@ -134,21 +138,43 @@ function MarketOptionButton({
   group,
   match,
   recommended,
+  azuroGameId,
 }: {
   opt: LamborMarketGroup["options"][number];
   group: LamborMarketGroup;
   match: LiveMatch;
   recommended: boolean;
+  azuroGameId?: string;
 }) {
+  const canAdd =
+    opt.executable !== false &&
+    Boolean(azuroGameId) &&
+    isValidAzuroSlipSelection({
+      gameId: azuroGameId,
+      conditionId: opt.marketId,
+      outcomeId: opt.outcomeId,
+      odds: opt.odds,
+      executable: opt.executable,
+    });
+
   return (
     <button
       type="button"
-      className={`rounded-lg border px-2 py-2 text-left text-xs font-semibold transition ${
+      disabled={!canAdd}
+      title={
+        !azuroGameId
+          ? "No Azuro game linked — cannot place this bet on-chain."
+          : !canAdd
+            ? "Missing on-chain market data for this selection."
+            : undefined
+      }
+      className={`rounded-lg border px-2 py-2 text-left text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-40 ${
         recommended
           ? "border-emerald-400/70 bg-emerald-500/15 text-emerald-200 shadow-[0_0_14px_rgba(0,255,163,0.12)]"
           : "border-zinc-700/80 bg-zinc-900/70 text-zinc-200 hover:border-zinc-500"
       }`}
       onClick={() => {
+        if (!azuroGameId || !canAdd) return;
         const detail = new CustomEvent<BetSlipSelection>("lambor:add-slip", {
           detail: {
             gameTitle: `${match.homeTeam} vs ${match.awayTeam}`,
@@ -159,6 +185,8 @@ function MarketOptionButton({
             odds: opt.odds,
             executable: opt.executable,
             matchId: match.id,
+            gameId: azuroGameId,
+            conditionKind: "LIVE",
           },
         });
         window.dispatchEvent(detail);
@@ -288,21 +316,26 @@ function LiveMatchMarketsSection({
                       <div className="space-y-3">
                         {payload.azuroGameId ? (
                           <p className="text-[10px] text-zinc-500">
-                            Linked Azuro game <span className="text-zinc-400">{payload.azuroGameId}</span> — on-chain odds where available.
+                            Linked Azuro game <span className="text-zinc-400">{payload.azuroGameId}</span> — only prices backed by Azuro conditions are shown.
                           </p>
                         ) : (
                           <p className="text-[10px] text-amber-300/90">
-                            No Azuro prematch link for this fixture — showing model lines (display / practice).
+                            No Azuro game linked for this fixture yet — on-chain betting is unavailable until the feed matches this match.
                           </p>
                         )}
-                        {payload.markets.map((group) => (
-                          <MarketGroupBlock
-                            key={`${group.type}-${group.line ?? "x"}`}
-                            group={group}
-                            match={match}
-                            hints={hints}
-                          />
-                        ))}
+                        {payload.markets.length === 0 ? (
+                          <p className="text-xs text-zinc-500">No Azuro conditions matched the supported market types for this game.</p>
+                        ) : (
+                          payload.markets.map((group) => (
+                            <MarketGroupBlock
+                              key={`${group.type}-${group.line ?? "x"}`}
+                              group={group}
+                              match={match}
+                              hints={hints}
+                              azuroGameId={payload.azuroGameId}
+                            />
+                          ))
+                        )}
                       </div>
                     ) : loadingMarketId !== match.id ? (
                       <p className="text-xs text-zinc-500">Open markets to load prices.</p>
@@ -632,6 +665,7 @@ export function BetPage({
       const keys = new Set(prev.map((i) => i.matchKey));
       const next = [...prev];
       for (const selection of queued) {
+        if (!isValidAzuroSlipSelection(selection)) continue;
         const mid = selection.matchId;
         const match = mid != null ? liveMatches.find((m) => m.id === mid) : undefined;
         const matchKey = match ? matchKeyFromLive(match) : `fixture:${mid ?? "x"}`;
@@ -652,6 +686,7 @@ export function BetPage({
     function onAddSlip(ev: Event) {
       const e = ev as CustomEvent<BetSlipSelection>;
       const selection = e.detail;
+      if (!isValidAzuroSlipSelection(selection)) return;
       const matchId = selection.matchId;
       if (matchId == null) return;
       const match = liveMatches.find((m) => m.id === matchId);
@@ -684,7 +719,7 @@ export function BetPage({
 
   function addFromQuick(match: LiveMatch) {
     const selection = recommendSelection(match);
-    if (!selection) return;
+    if (!selection || !isValidAzuroSlipSelection(selection)) return;
 
     const matchKey = matchKeyFromLive(match);
     const exists = slipItems.some((i) => i.matchKey === matchKey);

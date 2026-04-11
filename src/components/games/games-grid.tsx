@@ -99,7 +99,10 @@ export function GamesGrid({ games, conditionsByGameId, total, page, perPage }: G
                                   outcomeTitle: outcome.title ?? `Outcome ${outcome.outcomeId}`,
                                   conditionId: condition.conditionId,
                                   outcomeId: outcome.outcomeId,
-                                  odds: outcome.odds,
+                                  odds: String(outcome.odds),
+                                  executable: true,
+                                  gameId: game.gameId,
+                                  conditionKind: "LIVE",
                                 })
                               }
                               className={`rounded-md border px-2 py-1.5 text-left text-xs transition ${

@@ -1,6 +1,6 @@
 "use client";
 
-import { chainsData } from "@azuro-org/toolkit";
+import { BetOrderState, chainsData } from "@azuro-org/toolkit";
 import { useMemo, useState } from "react";
 import type { Address } from "viem";
 import { useAccount, useChainId, useSignTypedData, useSwitchChain } from "wagmi";
@@ -19,6 +19,7 @@ import {
   type SlipSelection,
 } from "@/lib/azuro/prepare-bet";
 import { prepareComboBetInteraction } from "@/lib/azuro/prepare-combo-bet";
+import { azuroSlipSelectionInvalidReason, isValidAzuroSlipSelection } from "@/lib/azuro/slip-selection-guards";
 import { submitComboBetOrder, submitOrdinaryBetOrder } from "@/lib/azuro/submit-azuro-order";
 import { ensurePolygonWallet } from "@/lib/wallet/ensure-polygon";
 
@@ -28,6 +29,9 @@ export type BetSlipSelection = SlipSelection & {
   outcomeTitle: string;
   executable?: boolean;
   matchId?: number;
+  /** Azuro graph / toolkit game id — required for a valid on-chain leg. */
+  gameId?: string;
+  conditionKind?: "LIVE";
   strategyPackageId?: string;
 };
 
@@ -79,6 +83,7 @@ export function BetSlip({
   const [amount, setAmount] = useState("");
   const [txState, setTxState] = useState<"idle" | "pending" | "success" | "failed">("idle");
   const [isPreparing, setIsPreparing] = useState(false);
+  const [awaitingSignature, setAwaitingSignature] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [prepared, setPrepared] = useState<PreparedBetInteraction | null>(null);
@@ -93,26 +98,31 @@ export function BetSlip({
     return stake * odds;
   }, [amount, selection]);
 
-  const isExecutable = selection?.executable !== false;
+  const selectionValid = selection ? isValidAzuroSlipSelection(selection) : false;
+  const selectionReason = selection ? azuroSlipSelectionInvalidReason(selection) : null;
 
   const stakeNum = Number.parseFloat(amount);
   const stakeOk = Number.isFinite(stakeNum) && stakeNum > 0;
-  const pendingReserve = txState === "pending" || parlayRunning ? stakeNum : 0;
+  const pendingReserve = txState === "pending" || parlayRunning || awaitingSignature ? stakeNum : 0;
   const effectiveStakeBalance = Math.max(0, stakingBalanceNumber - (Number.isFinite(pendingReserve) ? pendingReserve : 0));
   const balanceLoading = walletBalanceLoading || pmLoading;
   const insufficientStake =
     stakeOk && !balanceLoading && walletOnPolygon && stakeNum > stakingBalanceNumber;
 
+  const chainOk = chainId === AZURO_CHAIN_ID;
   const canPrepare = Boolean(
     selection &&
       address &&
       stakeOk &&
-      isExecutable &&
+      selectionValid &&
       walletOnPolygon &&
+      chainOk &&
       !insufficientStake &&
       !balanceLoading,
   );
-  const canPlaceBet = Boolean(canPrepare && prepared && !isPreparing && txState !== "pending");
+  const canPlaceBet = Boolean(
+    canPrepare && prepared && !isPreparing && !awaitingSignature && txState !== "pending" && !parlayRunning,
+  );
 
   async function ensureAzuroChain() {
     await ensurePolygonWallet();
@@ -124,7 +134,7 @@ export function BetSlip({
   }
 
   async function onPrepareTransaction() {
-    if (!selection || !address || selection.executable === false) return;
+    if (!selection || !address || !isValidAzuroSlipSelection(selection)) return;
     const coreAddress = resolveCoreAddress();
     if (!coreAddress) {
       setError("Could not resolve Azuro core contract address for this chain.");
@@ -151,7 +161,7 @@ export function BetSlip({
   }
 
   async function onPlaceBet() {
-    if (!selection || !address || !prepared || selection.executable === false) return;
+    if (!selection || !address || !prepared || !isValidAzuroSlipSelection(selection)) return;
 
     setTxState("pending");
     setError(null);
@@ -164,8 +174,11 @@ export function BetSlip({
         throw new Error("Could not resolve Azuro Core contract for this chain.");
       }
 
+      setAwaitingSignature(true);
       const signature = await signTypedDataAsync(prepared.typedData);
-      await submitOrdinaryBetOrder({
+      setAwaitingSignature(false);
+
+      const result = await submitOrdinaryBetOrder({
         account: address,
         signature,
         coreAddress,
@@ -173,26 +186,35 @@ export function BetSlip({
         ...prepared.submitPayload,
       });
 
+      if (result.state === BetOrderState.Rejected || result.errorMessage || result.error) {
+        throw new Error(result.errorMessage ?? result.error ?? "Order was rejected.");
+      }
+
       await invalidateAzuro();
       await refetchWalletBalances();
       await refetchPmBalances();
       onPlaced?.();
       setTxState("success");
-      setSuccessMessage("Order sent to Azuro. Relayer submits to Polygon — status updates below.");
+      setSuccessMessage(
+        `Order accepted (id ${result.id}). Relayer submits on Polygon — watch for Core NewLiveBet; Azuro bet token appears in your orders below.`,
+      );
     } catch (err) {
       const message = err instanceof Error ? err.message : "Bet execution failed.";
       setTxState("failed");
       setError(message);
+    } finally {
+      setAwaitingSignature(false);
     }
   }
 
-  const parlayLegs = parlaySelections?.filter((x) => x.executable !== false) ?? [];
+  const parlayLegs = parlaySelections?.filter((x) => isValidAzuroSlipSelection(x)) ?? [];
   const parlayEligible =
     parlayLegs.length >= 2 &&
     stakeOk &&
     Boolean(address) &&
     !parlayRunning &&
     walletOnPolygon &&
+    chainOk &&
     !insufficientStake &&
     !balanceLoading;
 
@@ -219,19 +241,25 @@ export function BetSlip({
         totalStakeHuman: amount,
         coreAddress,
       });
+      setAwaitingSignature(true);
       const signature = await signTypedDataAsync(prep.typedData);
-      await submitComboBetOrder({
+      setAwaitingSignature(false);
+
+      const comboResult = await submitComboBetOrder({
         account: address,
         signature,
         coreAddress,
         relayerFeeAmount: prep.fee.relayerFeeAmount,
         ...prep.submitPayload,
       });
+      if (comboResult.state === BetOrderState.Rejected || comboResult.errorMessage || comboResult.error) {
+        throw new Error(comboResult.errorMessage ?? comboResult.error ?? "Combo order was rejected.");
+      }
       await invalidateAzuro();
       await refetchWalletBalances();
       await refetchPmBalances();
       setTxState("success");
-      setSuccessMessage(`Combo order submitted (${n} legs, one signature).`);
+      setSuccessMessage(`Combo order accepted (id ${comboResult.id}, ${n} legs). Relayer submits on Polygon.`);
       onParlayComplete?.();
       onPlaced?.();
     } catch (err) {
@@ -239,6 +267,7 @@ export function BetSlip({
       setTxState("failed");
       setError(message);
     } finally {
+      setAwaitingSignature(false);
       setParlayRunning(false);
     }
   }
@@ -269,9 +298,11 @@ export function BetSlip({
               <span className="text-zinc-300">{selection.outcomeTitle}</span>
               <span className="font-semibold text-emerald-400">{selection.odds}</span>
             </div>
-            {selection.executable === false ? (
-              <p className="mt-2 text-[11px] text-amber-300">
-                Display-only line (no Azuro market id). Pick a highlighted on-chain odd to prepare a transaction.
+            {selectionReason ? (
+              <p className="mt-2 text-[11px] text-amber-300">{selectionReason} On-chain betting is disabled for this leg.</p>
+            ) : selection.gameId ? (
+              <p className="mt-2 text-[10px] text-zinc-500">
+                Azuro game <span className="font-mono text-zinc-400">{selection.gameId}</span> • LIVE
               </p>
             ) : null}
           </div>
@@ -319,7 +350,7 @@ export function BetSlip({
             disabled={!canPrepare || isPreparing}
             className="w-full rounded-md bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {isPreparing ? "Preparing…" : "Prepare transaction"}
+            {isPreparing ? "Loading…" : "Prepare transaction"}
           </button>
 
           <button
@@ -328,7 +359,11 @@ export function BetSlip({
             disabled={!canPlaceBet || parlayRunning}
             className="w-full rounded-md border border-emerald-700 px-4 py-2 text-sm font-semibold text-emerald-300 transition hover:bg-emerald-900/20 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {txState === "pending" && !parlayRunning ? "Submitting…" : "Sign & place bet"}
+            {awaitingSignature
+              ? "Awaiting signature…"
+              : txState === "pending" && !parlayRunning
+                ? "Transaction pending…"
+                : "Sign & place bet"}
           </button>
 
           {parlayEligible ? (
@@ -344,9 +379,9 @@ export function BetSlip({
             </button>
           ) : null}
 
-          {chainId !== targetChain.id ? (
+          {!chainOk && address ? (
             <p className="text-[11px] text-amber-300">
-              Azuro orders are signed on Polygon {targetChain.id}. Approve the network switch when prompted.
+              Wrong chain — switch to Polygon ({AZURO_CHAIN_ID}) to sign and place Azuro bets.
             </p>
           ) : null}
 
@@ -357,8 +392,11 @@ export function BetSlip({
           ) : null}
 
           {!address ? <p className="text-xs text-amber-300">Connect wallet to prepare order data.</p> : null}
-          {txState === "pending" ? (
-            <p className="text-xs text-amber-300">Waiting for signature and relayer submission…</p>
+          {awaitingSignature ? (
+            <p className="text-xs text-amber-300">Confirm the EIP-712 bet order in your wallet.</p>
+          ) : null}
+          {txState === "pending" && !awaitingSignature ? (
+            <p className="text-xs text-amber-300">Submitting signed order to Azuro relayer…</p>
           ) : null}
           {txState === "success" && successMessage ? <p className="text-xs text-emerald-300">{successMessage}</p> : null}
           {error ? <p className="text-xs text-red-300">{error}</p> : null}

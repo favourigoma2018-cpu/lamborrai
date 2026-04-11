@@ -128,6 +128,8 @@ export function pickUnder25FtFromLiveMatch(
       odds: oddsStr,
       executable: true,
       matchId: match.id,
+      gameId: selectedGame.gameId,
+      conditionKind: "LIVE",
     };
   }
 
@@ -162,5 +164,7 @@ export function pickSelectionFromLiveMatch(
     odds: oddsStr,
     executable: true,
     matchId: match.id,
+    gameId: selectedGame.gameId,
+    conditionKind: "LIVE",
   };
 }

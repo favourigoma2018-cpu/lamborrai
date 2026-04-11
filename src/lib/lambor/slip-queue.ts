@@ -1,4 +1,5 @@
 import type { BetSlipSelection } from "@/components/bets/bet-slip";
+import { isValidAzuroSlipSelection } from "@/lib/azuro/slip-selection-guards";
 
 const KEY = "lambor.slip.queue.v1";
 
@@ -8,10 +9,12 @@ export function enqueueSlipSelections(items: BetSlipSelection[], strategyPackage
   try {
     const raw = sessionStorage.getItem(KEY);
     const prev: BetSlipSelection[] = raw ? (JSON.parse(raw) as BetSlipSelection[]) : [];
+    const validItems = items.filter(isValidAzuroSlipSelection);
+    if (validItems.length === 0) return;
     const tagged =
       strategyPackageId != null && strategyPackageId !== ""
-        ? items.map((item) => ({ ...item, strategyPackageId: item.strategyPackageId ?? strategyPackageId }))
-        : items;
+        ? validItems.map((item) => ({ ...item, strategyPackageId: item.strategyPackageId ?? strategyPackageId }))
+        : validItems;
     sessionStorage.setItem(KEY, JSON.stringify([...prev, ...tagged]));
   } catch {
     /* ignore */

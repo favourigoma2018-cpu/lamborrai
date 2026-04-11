@@ -16,10 +16,10 @@ export type LamborMarketOption = {
   label: string;
   /** Decimal odds string for display and Azuro minOdds. */
   odds: string;
-  /** Azuro condition id when executable; synthetic ids use lambor: prefix. */
+  /** Azuro condition id (maps to on-chain condition). */
   marketId: string;
   outcomeId: string;
-  /** True when this maps to a live Azuro condition/outcome. */
+  /** True when this row came from an Azuro `GameCondition` (always true for rows we emit). */
   executable: boolean;
 };
 

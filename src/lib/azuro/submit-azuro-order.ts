@@ -1,4 +1,4 @@
-import { createBet, createComboBet } from "@azuro-org/toolkit";
+import type { CreateBetResult } from "@azuro-org/toolkit";
 import type { Address, Hex } from "viem";
 
 import { AZURO_CHAIN_ID } from "@/config/chain";
@@ -19,8 +19,24 @@ function clientData(core: Address, relayerFeeAmount: string) {
   } as const;
 }
 
-/** Submit signed ordinary bet to Azuro relayer API (on-chain settlement via protocol). */
-export function submitOrdinaryBetOrder(args: {
+async function postPlaceBet(body: unknown): Promise<CreateBetResult> {
+  const res = await fetch("/api/azuro/place-bet", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = (await res.json().catch(() => ({}))) as CreateBetResult & { error?: string };
+  if (!res.ok) {
+    throw new Error(data.error ?? `Bet relay failed (${res.status}).`);
+  }
+  if (data.error) {
+    throw new Error(data.error);
+  }
+  return data;
+}
+
+/** Submit signed ordinary bet via Lambor API relay → Azuro relayer → Core. */
+export async function submitOrdinaryBetOrder(args: {
   account: Address;
   signature: Hex;
   conditionId: string;
@@ -30,8 +46,8 @@ export function submitOrdinaryBetOrder(args: {
   nonce: string;
   coreAddress: Address;
   relayerFeeAmount: string;
-}) {
-  return createBet({
+}): Promise<CreateBetResult> {
+  return postPlaceBet({
     account: args.account,
     signature: args.signature,
     bet: {
@@ -45,8 +61,8 @@ export function submitOrdinaryBetOrder(args: {
   });
 }
 
-/** Submit signed combo (parlay) bet to Azuro relayer API. */
-export function submitComboBetOrder(args: {
+/** Submit signed combo (parlay) bet via Lambor API relay → Azuro. */
+export async function submitComboBetOrder(args: {
   account: Address;
   signature: Hex;
   bets: { conditionId: string; outcomeId: string }[];
@@ -55,8 +71,8 @@ export function submitComboBetOrder(args: {
   nonce: string;
   coreAddress: Address;
   relayerFeeAmount: string;
-}) {
-  return createComboBet({
+}): Promise<CreateBetResult> {
+  return postPlaceBet({
     account: args.account,
     signature: args.signature,
     bets: args.bets.map((b) => ({
