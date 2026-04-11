@@ -16,7 +16,7 @@ export type MarketPeriod = "full" | "1st_half" | "2nd_half";
 export type LamborMarketOption = {
   /** Human label (e.g. "Home", "Over 2.5"). */
   label: string;
-  /** Decimal odds string for display and Azuro minOdds. */
+  /** Decimal odds string for display; `prepareBet` derives EIP-712 `minOdds` with slippage. */
   odds: string;
   /** Azuro condition id (maps to on-chain condition). */
   marketId: string;

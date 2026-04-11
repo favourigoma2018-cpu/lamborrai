@@ -10,6 +10,7 @@ import type { Address } from "viem";
 import { AZURO_CHAIN_ID } from "@/config/chain";
 
 import { parseBetTokenAmountRaw } from "./bet-amount";
+import { minOddsHumanToEip712 } from "./min-odds-for-eip712";
 import { azuroOrderNonce } from "./order-nonce";
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as Address;
@@ -55,7 +56,8 @@ export async function prepareBet(args: PrepareBetArgs): Promise<PreparedOrdinary
     getBetFee(AZURO_CHAIN_ID),
   ]);
 
-  const minOdds = calcMinOdds({ odds: oddsNum, slippage: 5 });
+  const minOddsHuman = calcMinOdds({ odds: oddsNum, slippage: 5 });
+  const minOdds = minOddsHumanToEip712(minOddsHuman);
   const amountRaw = parseBetTokenAmountRaw(amount);
   const nonce = azuroOrderNonce();
 

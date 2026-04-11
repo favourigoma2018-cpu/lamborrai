@@ -10,6 +10,7 @@ import type { Address } from "viem";
 import { AZURO_CHAIN_ID } from "@/config/chain";
 
 import { parseBetTokenAmountRaw } from "./bet-amount";
+import { minOddsHumanToEip712 } from "./min-odds-for-eip712";
 import { azuroOrderNonce } from "./order-nonce";
 import type { SlipSelection } from "./prepareBet";
 
@@ -39,7 +40,8 @@ export async function prepareComboBetInteraction({
 
   const [fee] = await Promise.all([getBetFee(AZURO_CHAIN_ID)]);
 
-  const minOdds = calcMinOdds({ odds, slippage: 5 });
+  const minOddsHuman = calcMinOdds({ odds, slippage: 5 });
+  const minOdds = minOddsHumanToEip712(minOddsHuman);
   const amount = parseBetTokenAmountRaw(totalStakeHuman);
   const nonce = azuroOrderNonce();
 
